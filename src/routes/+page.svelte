@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { auth, db } from '$lib/firebase';
-  import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+  import { signInWithEmailAndPassword, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
   import { collection, getDocs, query, orderBy, limit } from 'firebase/firestore';
 
   let email = $state('');
@@ -23,6 +23,19 @@
       await signInWithEmailAndPassword(auth, email, password);
     } catch (err: any) {
       loginError = err.message || '登入失敗，請檢查帳號密碼。';
+    } finally {
+      isLoggingIn = false;
+    }
+  }
+
+  async function handleGoogleLogin() {
+    isLoggingIn = true;
+    loginError = '';
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (err: any) {
+      loginError = err.message || 'Google 登入失敗。';
     } finally {
       isLoggingIn = false;
     }
@@ -77,9 +90,13 @@
           <input type="password" bind:value={password} placeholder="密碼" required />
           {#if loginError}<div class="error">{loginError}</div>{/if}
           <button type="submit" disabled={isLoggingIn}>
-            {isLoggingIn ? '登入中...' : '登入'}
+            {isLoggingIn ? '登入中...' : '使用 Email 登入'}
           </button>
         </form>
+        <div class="divider">或</div>
+        <button class="google-btn" onclick={handleGoogleLogin} disabled={isLoggingIn}>
+          使用 Google 登入
+        </button>
       </div>
     </div>
   {:else}
@@ -220,6 +237,40 @@
   .error {
     color: red;
     font-size: 0.9rem;
+  }
+  .divider {
+    margin: 1.5rem 0;
+    color: #888;
+    position: relative;
+  }
+  .divider::before, .divider::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 40%;
+    height: 1px;
+    background: #ddd;
+  }
+  .divider::before { left: 0; }
+  .divider::after { right: 0; }
+  .google-btn {
+    width: 100%;
+    padding: 0.75rem;
+    background: #fff;
+    color: #444;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
+  .google-btn:hover {
+    background: #f9f9f9;
+  }
+  .google-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
   }
 
   /* 後台佈局 */
