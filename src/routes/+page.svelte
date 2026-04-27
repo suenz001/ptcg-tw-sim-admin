@@ -15,6 +15,10 @@
   let feedbacks = $state<any[]>([]);
   let loadingData = $state(false);
 
+  let viewingUser = $state<any>(null);
+  let userDecks = $state<any[]>([]);
+  let loadingDecks = $state(false);
+
   // Authentication
   async function handleLogin() {
     isLoggingIn = true;
@@ -43,6 +47,25 @@
 
   function handleLogout() {
     signOut(auth);
+  }
+
+  async function loadUserDecks(u: any) {
+    viewingUser = u;
+    loadingDecks = true;
+    userDecks = [];
+    try {
+      const snap = await getDocs(collection(db, 'users', u.id, 'decks'));
+      userDecks = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err: any) {
+      console.error(err);
+      alert('無法載入牌組：' + err.message);
+    } finally {
+      loadingDecks = false;
+    }
+  }
+
+  function closeDecks() {
+    viewingUser = null;
   }
 
   // Data Fetching
@@ -123,6 +146,7 @@
                     <th>Email</th>
                     <th>登入次數</th>
                     <th>最後登入時間</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -133,6 +157,9 @@
                       <td>{u.email || '-'}</td>
                       <td>{u.loginCount || 1}</td>
                       <td>{formatDate(u.lastLoginAt || u.createdAt)}</td>
+                      <td>
+                        <button class="action-btn" onclick={() => loadUserDecks(u)}>檢視牌組</button>
+                      </td>
                     </tr>
                   {/each}
                 </tbody>
@@ -160,6 +187,43 @@
         {/if}
       </div>
     </div>
+
+  {#if viewingUser}
+    <div class="modal-overlay" onclick={closeDecks}>
+      <div class="modal-content" onclick={(e)=>e.stopPropagation()}>
+        <div class="modal-header">
+          <h2>{viewingUser.email || viewingUser.id} 的牌組</h2>
+          <button class="close-btn" onclick={closeDecks}>✕</button>
+        </div>
+        <div class="modal-body">
+          {#if loadingDecks}
+            <p>載入中...</p>
+          {:else if userDecks.length === 0}
+            <p>該玩家目前沒有建立任何牌組。</p>
+          {:else}
+            <ul class="deck-list">
+              {#each userDecks as deck}
+                <li class="deck-item">
+                  <div class="deck-name">{deck.name || '未命名牌組'}</div>
+                  <div class="deck-count">{deck.cards ? deck.cards.length : 0} 張卡牌</div>
+                  {#if deck.cards && deck.cards.length > 0}
+                    <div class="deck-cards">
+                      {#each deck.cards.slice(0, 10) as c}
+                        <span class="card-badge">{c.name || c.id}</span>
+                      {/each}
+                      {#if deck.cards.length > 10}
+                        <span class="card-badge more">...等</span>
+                      {/if}
+                    </div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -412,4 +476,54 @@
     white-space: pre-wrap;
     color: #333;
   }
+
+  /* 模態視窗與操作按鈕 */
+  .action-btn { padding: 0.4rem 0.8rem; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+  .action-btn:hover { background: #218838; }
+
+  .modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+  }
+  .modal-content {
+    background: white;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 600px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  }
+  .modal-header {
+    padding: 1.5rem;
+    border-bottom: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .modal-header h2 { margin: 0; font-size: 1.25rem; }
+  .close-btn {
+    background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #888;
+  }
+  .modal-body {
+    padding: 1.5rem;
+    overflow-y: auto;
+  }
+  .deck-list {
+    list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 1rem;
+  }
+  .deck-item {
+    border: 1px solid #eee; border-radius: 8px; padding: 1rem; background: #fcfcfc;
+  }
+  .deck-name { font-weight: bold; font-size: 1.1rem; margin-bottom: 0.5rem; color: #0066cc; }
+  .deck-count { font-size: 0.9rem; color: #666; margin-bottom: 0.8rem; }
+  .deck-cards { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .card-badge { background: #eee; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; color: #333; }
+  .card-badge.more { background: none; color: #888; font-style: italic; }
 </style>
