@@ -47,7 +47,6 @@
 
   // Data Fetching
   async function loadData() {
-    if (!auth.currentUser) return;
     loadingData = true;
     try {
       // 載入玩家
@@ -66,11 +65,9 @@
     }
   }
 
-  // Monitor auth state changes to load data automatically when logged in
-  $effect(() => {
-    if (auth.currentUser) {
-      loadData();
-    }
+  // Auto load data on mount
+  onMount(() => {
+    loadData();
   });
 
   function formatDate(ts: any) {
@@ -80,32 +77,11 @@
 </script>
 
 <main>
-  {#if !auth.currentUser}
-    <div class="login-container">
-      <div class="login-box">
-        <h1>PTCG 系統管理後台</h1>
-        <p>請使用管理員帳號登入</p>
-        <form onsubmit={(e) => { e.preventDefault(); handleLogin(); }}>
-          <input type="email" bind:value={email} placeholder="Email" required />
-          <input type="password" bind:value={password} placeholder="密碼" required />
-          {#if loginError}<div class="error">{loginError}</div>{/if}
-          <button type="submit" disabled={isLoggingIn}>
-            {isLoggingIn ? '登入中...' : '使用 Email 登入'}
-          </button>
-        </form>
-        <div class="divider">或</div>
-        <button class="google-btn" onclick={handleGoogleLogin} disabled={isLoggingIn}>
-          使用 Google 登入
-        </button>
-      </div>
-    </div>
-  {:else}
     <header class="admin-header">
       <div class="header-content">
-        <h1>PTCG 後台系統</h1>
+        <h1>PTCG 後台系統 (公開測試版)</h1>
         <div class="user-info">
-          <span>{auth.currentUser.email}</span>
-          <button class="logout-btn" onclick={handleLogout}>登出</button>
+          <span>訪客模式</span>
         </div>
       </div>
     </header>
@@ -184,7 +160,6 @@
         {/if}
       </div>
     </div>
-  {/if}
 </main>
 
 <style>
