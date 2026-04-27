@@ -18,6 +18,39 @@
   let viewingUser = $state<any>(null);
   let userDecks = $state<any[]>([]);
   let loadingDecks = $state(false);
+  let expandedDeckId = $state<string | null>(null);
+
+  // Card name lookup map: cardId -> Chinese name
+  let cardNameMap = $state<Record<string, string>>({});
+  let cardNameLoaded = false;
+
+  const MAIN_SITE = 'https://suenz001.github.io/ptcg-tw-sim';
+
+  async function loadCardNames() {
+    if (cardNameLoaded) return;
+    try {
+      const indexRes = await fetch(`${MAIN_SITE}/cards/index.json`);
+      const sets: any[] = await indexRes.json();
+      const map: Record<string, string> = {};
+      await Promise.all(sets.map(async (s: any) => {
+        try {
+          const res = await fetch(`${MAIN_SITE}/cards/${s.code}.json`);
+          const cards: any[] = await res.json();
+          for (const c of cards) {
+            map[c.id] = c.name;
+          }
+        } catch { /* skip failed sets */ }
+      }));
+      cardNameMap = map;
+      cardNameLoaded = true;
+    } catch (err) {
+      console.error('Failed to load card names:', err);
+    }
+  }
+
+  function getCardName(cardId: string): string {
+    return cardNameMap[cardId] || `#${cardId}`;
+  }
 
   // Authentication
   async function handleLogin() {
@@ -53,6 +86,9 @@
     viewingUser = u;
     loadingDecks = true;
     userDecks = [];
+    expandedDeckId = null;
+    // Load card names in parallel
+    loadCardNames();
     try {
       const snap = await getDocs(collection(db, 'users', u.id, 'decks'));
       userDecks = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -205,16 +241,29 @@
               {#each userDecks as deck}
                 {@const totalCards = deck.entries ? deck.entries.reduce((sum, e) => sum + e.count, 0) : 0}
                 <li class="deck-item">
-                  <div class="deck-name">{deck.name || '未命名牌組'}</div>
-                  <div class="deck-count">{totalCards} 張卡牌</div>
-                  {#if deck.entries && deck.entries.length > 0}
-                    <div class="deck-cards">
-                      {#each deck.entries.slice(0, 10) as e}
-                        <span class="card-badge">{e.cardId} x{e.count}</span>
-                      {/each}
-                      {#if deck.entries.length > 10}
-                        <span class="card-badge more">...等</span>
-                      {/if}
+                  <button class="deck-header-btn" onclick={() => expandedDeckId = expandedDeckId === deck.id ? null : deck.id}>
+                    <span class="deck-name">{deck.name || '未命名牌組'}</span>
+                    <span class="deck-count">{totalCards} 張卡牌</span>
+                    <span class="expand-icon">{expandedDeckId === deck.id ? '▲' : '▼'}</span>
+                  </button>
+                  {#if expandedDeckId === deck.id && deck.entries && deck.entries.length > 0}
+                    <div class="deck-detail">
+                      <table class="deck-table">
+                        <thead>
+                          <tr>
+                            <th>卡牌名稱</th>
+                            <th>數量</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {#each deck.entries as e}
+                            <tr>
+                              <td>{getCardName(e.cardId)}</td>
+                              <td>x{e.count}</td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
                     </div>
                   {/if}
                 </li>
@@ -517,14 +566,22 @@
     overflow-y: auto;
   }
   .deck-list {
-    list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 1rem;
+    list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem;
   }
   .deck-item {
-    border: 1px solid #eee; border-radius: 8px; padding: 1rem; background: #fcfcfc;
+    border: 1px solid #eee; border-radius: 8px; background: #fcfcfc; overflow: hidden;
   }
-  .deck-name { font-weight: bold; font-size: 1.1rem; margin-bottom: 0.5rem; color: #0066cc; }
-  .deck-count { font-size: 0.9rem; color: #666; margin-bottom: 0.8rem; }
-  .deck-cards { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-  .card-badge { background: #eee; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; color: #333; }
-  .card-badge.more { background: none; color: #888; font-style: italic; }
+  .deck-header-btn {
+    width: 100%; padding: 1rem; background: none; border: none; cursor: pointer;
+    display: flex; align-items: center; gap: 1rem; text-align: left; font: inherit;
+  }
+  .deck-header-btn:hover { background: #f0f5ff; }
+  .deck-name { font-weight: bold; font-size: 1.1rem; color: #0066cc; flex: 1; }
+  .deck-count { font-size: 0.85rem; color: #666; }
+  .expand-icon { font-size: 0.8rem; color: #aaa; }
+  .deck-detail { padding: 0 1rem 1rem; }
+  .deck-table { width: 100%; border-collapse: collapse; }
+  .deck-table th, .deck-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; text-align: left; font-size: 0.9rem; }
+  .deck-table th { background: #f8f9fa; color: #555; font-weight: 600; }
+  .deck-table td:last-child { text-align: center; width: 60px; }
 </style>
