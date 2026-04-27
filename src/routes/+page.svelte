@@ -203,15 +203,16 @@
           {:else}
             <ul class="deck-list">
               {#each userDecks as deck}
+                {@const totalCards = deck.entries ? deck.entries.reduce((sum, e) => sum + e.count, 0) : 0}
                 <li class="deck-item">
                   <div class="deck-name">{deck.name || '未命名牌組'}</div>
-                  <div class="deck-count">{deck.cards ? deck.cards.length : 0} 張卡牌</div>
-                  {#if deck.cards && deck.cards.length > 0}
+                  <div class="deck-count">{totalCards} 張卡牌</div>
+                  {#if deck.entries && deck.entries.length > 0}
                     <div class="deck-cards">
-                      {#each deck.cards.slice(0, 10) as c}
-                        <span class="card-badge">{c.name || c.id}</span>
+                      {#each deck.entries.slice(0, 10) as e}
+                        <span class="card-badge">{e.cardId} x{e.count}</span>
                       {/each}
-                      {#if deck.cards.length > 10}
+                      {#if deck.entries.length > 10}
                         <span class="card-badge more">...等</span>
                       {/if}
                     </div>
