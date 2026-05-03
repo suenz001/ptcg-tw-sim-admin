@@ -599,4 +599,12 @@
     display: flex; align-items: center; gap: 1rem; text-align: left; font: inherit;
   }
   .deck-header-btn:hover { background: #f0f5ff; }
-  .deck-name { font-weight: b
+  .deck-name { font-weight: bold; font-size: 1.1rem; color: #0066cc; flex: 1; }
+  .deck-count { font-size: 0.85rem; color: #666; }
+  .expand-icon { font-size: 0.8rem; color: #aaa; }
+  .deck-detail { padding: 0 1rem 1rem; }
+  .deck-table { width: 100%; border-collapse: collapse; }
+  .deck-table th, .deck-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; text-align: left; font-size: 0.9rem; }
+  .deck-table th { background: #f8f9fa; color: #555; font-weight: 600; }
+  .deck-table td:last-child { text-align: center; width: 60px; }
+</style>
