@@ -3,18 +3,28 @@
   import { auth, db } from '$lib/firebase';
   import { APP_VERSION } from '$lib';
   import { signInWithEmailAndPassword, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-  import { collection, getDocs, query, orderBy, limit } from 'firebase/firestore';
+  import { collection, getDocs, query, orderBy, limit, where } from 'firebase/firestore';
 
   let email = $state('');
   let password = $state('');
   let loginError = $state('');
   let isLoggingIn = $state(false);
 
-  let activeTab = $state<'overview' | 'users' | 'feedback'>('overview');
+  let activeTab = $state<'overview' | 'users' | 'feedback' | 'battles'>('overview');
 
   let users = $state<any[]>([]);
   let feedbacks = $state<any[]>([]);
   let loadingData = $state(false);
+
+  // 玩家列表篩選
+  let searchQuery = $state('');
+  let filterType = $state<'all' | 'member' | 'anonymous'>('all');
+  let filterBrowser = $state('all');
+
+  // 對戰紀錄
+  let rooms = $state<any[]>([]);
+  let loadingRooms = $state(false);
+  let battleFilter = $state<'all' | 'playing' | 'ended' | 'lobby'>('all');
 
   let viewingUser = $state<any>(null);
   let userDecks = $state<any[]>([]);
@@ -120,6 +130,39 @@
     viewingUser = null;
   }
 
+  // 玩家列表篩選邏輯（client-side）
+  let filteredUsers = $derived(users.filter(u => {
+    if (filterType === 'member' && u.isAnonymous) return false;
+    if (filterType === 'anonymous' && !u.isAnonymous) return false;
+    if (filterBrowser !== 'all' && parseBrowser(u.userAgent) !== filterBrowser) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      const matchUid = u.id?.toLowerCase().includes(q);
+      const matchEmail = u.email?.toLowerCase().includes(q);
+      const matchDevice = u.deviceId?.toLowerCase().includes(q);
+      if (!matchUid && !matchEmail && !matchDevice) return false;
+    }
+    return true;
+  }));
+
+  // 對戰紀錄篩選
+  let filteredRooms = $derived(battleFilter === 'all'
+    ? rooms
+    : rooms.filter(r => r.status === battleFilter));
+
+  // 對戰紀錄載入
+  async function loadRooms() {
+    loadingRooms = true;
+    try {
+      const snap = await getDocs(query(collection(db, 'rooms'), orderBy('updatedAt', 'desc'), limit(100)));
+      rooms = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (err: any) {
+      console.error('Failed to load rooms:', err);
+    } finally {
+      loadingRooms = false;
+    }
+  }
+
   // Data Fetching
   async function loadData() {
     loadingData = true;
@@ -127,6 +170,9 @@
       // 載入玩家
       const usersSnap = await getDocs(query(collection(db, 'users'), orderBy('lastLoginAt', 'desc'), limit(100)));
       users = usersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // 載入對戰紀錄
+      const roomsSnap = await getDocs(query(collection(db, 'rooms'), orderBy('updatedAt', 'desc'), limit(100)));
+      rooms = roomsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
       // 載入意見回饋
       const feedSnap = await getDocs(query(collection(db, 'feedbacks'), orderBy('createdAt', 'desc'), limit(50)));
@@ -181,6 +227,7 @@
         <button class:active={activeTab === 'overview'} onclick={() => activeTab = 'overview'}>📊 總覽</button>
         <button class:active={activeTab === 'users'} onclick={() => activeTab = 'users'}>👥 玩家列表</button>
         <button class:active={activeTab === 'feedback'} onclick={() => activeTab = 'feedback'}>💬 意見回饋</button>
+        <button class:active={activeTab === 'battles'} onclick={() => activeTab = 'battles'}>🎮 對戰紀錄</button>
         <button class="refresh-btn" onclick={loadData} disabled={loadingData}>🔄 重新整理</button>
       </aside>
 
@@ -204,6 +251,31 @@
         {:else if activeTab === 'users'}
           <section>
             <h2>玩家列表 (最新 100 筆)</h2>
+            <div class="filter-bar">
+              <input
+                type="text"
+                class="filter-input"
+                placeholder="搜尋 UID / Email / 裝置ID..."
+                bind:value={searchQuery}
+              />
+              <select class="filter-select" bind:value={filterType}>
+                <option value="all">全部帳號</option>
+                <option value="member">僅會員</option>
+                <option value="anonymous">僅匿名</option>
+              </select>
+              <select class="filter-select" bind:value={filterBrowser}>
+                <option value="all">全部瀏覽器</option>
+                <option value="🌐 Chrome">Chrome</option>
+                <option value="🦊 Firefox">Firefox</option>
+                <option value="🧭 Safari">Safari</option>
+                <option value="🌐 Edge">Edge</option>
+                <option value="🌐 Opera">Opera</option>
+                <option value="📱 iOS">iOS</option>
+                <option value="📱 Android">Android</option>
+                <option value="❓ 其他">其他</option>
+              </select>
+              <span class="filter-count">{filteredUsers.length} / {users.length} 筆</span>
+            </div>
             <div class="table-container">
               <table>
                 <thead>
@@ -219,7 +291,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {#each users as u}
+                  {#each filteredUsers as u}
                     <tr>
                       <td class="mono">{u.id}</td>
                       <td>{u.isAnonymous ? '匿名' : '會員'}</td>
@@ -254,6 +326,57 @@
                 <p>目前沒有任何意見回饋。</p>
               {/if}
             </div>
+          </section>
+        {:else if activeTab === 'battles'}
+          <section>
+            <h2>對戰紀錄 (最新 100 筆)</h2>
+            <div class="filter-bar">
+              <button class="battle-filter-btn" class:active={battleFilter === 'all'} onclick={() => battleFilter = 'all'}>全部 ({rooms.length})</button>
+              <button class="battle-filter-btn playing" class:active={battleFilter === 'playing'} onclick={() => battleFilter = 'playing'}>⚔️ 進行中 ({rooms.filter(r=>r.status==='playing').length})</button>
+              <button class="battle-filter-btn lobby" class:active={battleFilter === 'lobby'} onclick={() => battleFilter = 'lobby'}>🏠 等待中 ({rooms.filter(r=>r.status==='lobby').length})</button>
+              <button class="battle-filter-btn ended" class:active={battleFilter === 'ended'} onclick={() => battleFilter = 'ended'}>✅ 已結束 ({rooms.filter(r=>r.status==='ended').length})</button>
+            </div>
+            {#if loadingRooms}
+              <div class="loading">載入對戰紀錄中...</div>
+            {:else}
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>房號</th>
+                    <th>房間名稱</th>
+                    <th>P1</th>
+                    <th>P2</th>
+                    <th>狀態</th>
+                    <th>勝者</th>
+                    <th>回合</th>
+                    <th>最後更新</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each filteredRooms as room}
+                    {@const p1 = room.seats?.[0]}
+                    {@const p2 = room.seats?.[1]}
+                    {@const gs = room.gameState}
+                    {@const winnerName = gs?.winner === 0 ? p1?.name : gs?.winner === 1 ? p2?.name : null}
+                    <tr>
+                      <td class="mono room-code">{room.id}</td>
+                      <td>{room.roomName || '-'}</td>
+                      <td class:winner-cell={gs?.winner === 0}>{p1?.name || '（空）'}</td>
+                      <td class:winner-cell={gs?.winner === 1}>{p2?.name || '（空）'}</td>
+                      <td><span class="status-badge status-{room.status}">{room.status === 'playing' ? '⚔️ 進行中' : room.status === 'lobby' ? '🏠 等待中' : '✅ 已結束'}</span></td>
+                      <td class="winner-col">{winnerName ? `🏆 ${winnerName}` : '-'}</td>
+                      <td>{gs?.turn ?? '-'}</td>
+                      <td>{formatDate(room.updatedAt)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+            {#if filteredRooms.length === 0}
+              <p style="text-align:center; color:#888; margin-top:2rem;">目前沒有符合條件的對戰紀錄</p>
+            {/if}
+            {/if}
           </section>
         {/if}
       </div>
@@ -634,4 +757,69 @@
   .deck-table th, .deck-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; text-align: left; font-size: 0.9rem; }
   .deck-table th { background: #f8f9fa; color: #555; font-weight: 600; }
   .deck-table td:last-child { text-align: center; width: 60px; }
+
+  /* 篩選列 */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .filter-input {
+    flex: 1;
+    min-width: 200px;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 0.9rem;
+  }
+  .filter-input:focus { outline: none; border-color: #0066cc; }
+  .filter-select {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    background: white;
+    cursor: pointer;
+  }
+  .filter-count {
+    font-size: 0.85rem;
+    color: #888;
+    white-space: nowrap;
+  }
+
+  /* 對戰篩選按鈕 */
+  .battle-filter-btn {
+    padding: 0.4rem 1rem;
+    border: 1px solid #ccc;
+    border-radius: 20px;
+    background: white;
+    font-size: 0.9rem;
+    cursor: pointer;
+    color: #555;
+  }
+  .battle-filter-btn:hover { background: #f0f0f0; }
+  .battle-filter-btn.active { background: #0066cc; color: white; border-color: #0066cc; }
+  .battle-filter-btn.playing.active { background: #28a745; border-color: #28a745; }
+  .battle-filter-btn.lobby.active { background: #fd7e14; border-color: #fd7e14; }
+  .battle-filter-btn.ended.active { background: #6c757d; border-color: #6c757d; }
+
+  /* 狀態徽章 */
+  .status-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .status-playing { background: #d4edda; color: #155724; }
+  .status-lobby   { background: #fff3cd; color: #856404; }
+  .status-ended   { background: #e2e3e5; color: #383d41; }
+
+  /* 對戰表格 */
+  .room-code { font-size: 1rem; font-weight: bold; letter-spacing: 0.1em; color: #333; }
+  .winner-cell { font-weight: bold; color: #0066cc; }
+  .winner-col { color: #28a745; font-weight: 600; }
 </style>
