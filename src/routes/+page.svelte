@@ -20,8 +20,13 @@
   let loadingDecks = $state(false);
   let expandedDeckId = $state<string | null>(null);
 
-  // Card name lookup map: cardId -> Chinese name
-  let cardNameMap = $state<Record<string, string>>({});
+  // 卡牌資訊查詢表：cardId -> { name, setCode, collectorNumber }
+  interface CardInfo {
+    name: string;
+    setCode: string;
+    collectorNumber: string;
+  }
+  let cardInfoMap = $state<Record<string, CardInfo>>({});
   let cardNameLoaded = false;
 
   const MAIN_SITE = 'https://suenz001.github.io/ptcg-tw-sim';
@@ -31,25 +36,35 @@
     try {
       const indexRes = await fetch(`${MAIN_SITE}/cards/index.json`);
       const sets: any[] = await indexRes.json();
-      const map: Record<string, string> = {};
+      const map: Record<string, CardInfo> = {};
       await Promise.all(sets.map(async (s: any) => {
         try {
           const res = await fetch(`${MAIN_SITE}/cards/${s.code}.json`);
           const cards: any[] = await res.json();
           for (const c of cards) {
-            map[c.id] = c.name;
+            map[c.id] = {
+              name: c.name,
+              setCode: c.setCode || s.code,
+              collectorNumber: c.collectorNumber || ''
+            };
           }
         } catch { /* skip failed sets */ }
       }));
-      cardNameMap = map;
+      cardInfoMap = map;
       cardNameLoaded = true;
     } catch (err) {
       console.error('Failed to load card names:', err);
     }
   }
 
-  function getCardName(cardId: string): string {
-    return cardNameMap[cardId] || `#${cardId}`;
+  // 回傳卡牌名稱（含版本與卡號），例如：奇諾栗鼠ex M4 · 071/083
+  function getCardLabel(cardId: string): string {
+    const info = cardInfoMap[cardId];
+    if (!info) return `#${cardId}`;
+    const setInfo = info.collectorNumber
+      ? `${info.setCode} · ${info.collectorNumber}`
+      : info.setCode;
+    return `${info.name} ${setInfo}`;
   }
 
   // Authentication
@@ -258,7 +273,7 @@
                         <tbody>
                           {#each deck.entries as e}
                             <tr>
-                              <td>{getCardName(e.cardId)}</td>
+                              <td>{getCardLabel(e.cardId)}</td>
                               <td>x{e.count}</td>
                             </tr>
                           {/each}
@@ -576,12 +591,4 @@
     display: flex; align-items: center; gap: 1rem; text-align: left; font: inherit;
   }
   .deck-header-btn:hover { background: #f0f5ff; }
-  .deck-name { font-weight: bold; font-size: 1.1rem; color: #0066cc; flex: 1; }
-  .deck-count { font-size: 0.85rem; color: #666; }
-  .expand-icon { font-size: 0.8rem; color: #aaa; }
-  .deck-detail { padding: 0 1rem 1rem; }
-  .deck-table { width: 100%; border-collapse: collapse; }
-  .deck-table th, .deck-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; text-align: left; font-size: 0.9rem; }
-  .deck-table th { background: #f8f9fa; color: #555; font-weight: 600; }
-  .deck-table td:last-child { text-align: center; width: 60px; }
-</style>
+  .deck-name { font-weight: b
