@@ -31,6 +31,9 @@
   let loadingDecks = $state(false);
   let expandedDeckId = $state<string | null>(null);
 
+  // 對戰牌組檢視
+  let viewingRoom = $state<any>(null);
+
   // 卡牌資訊查詢表：cardId -> { name, setCode, collectorNumber }
   interface CardInfo {
     name: string;
@@ -128,6 +131,15 @@
 
   function closeDecks() {
     viewingUser = null;
+  }
+
+  function openRoomDecks(room: any) {
+    viewingRoom = room;
+    loadCardNames(); // 確保卡名對應表已載入
+  }
+
+  function closeRoomDecks() {
+    viewingRoom = null;
   }
 
   // 玩家列表篩選邏輯（client-side）
@@ -351,6 +363,7 @@
                     <th>勝者</th>
                     <th>回合</th>
                     <th>最後更新</th>
+                    <th>牌組</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -368,6 +381,13 @@
                       <td class="winner-col">{winnerName ? `🏆 ${winnerName}` : '-'}</td>
                       <td>{gs?.turn ?? '-'}</td>
                       <td>{formatDate(room.updatedAt)}</td>
+                      <td>
+                        {#if room.seats?.[0]?.deckEntries || room.seats?.[1]?.deckEntries}
+                          <button class="action-btn" onclick={() => openRoomDecks(room)}>檢視牌組</button>
+                        {:else}
+                          <span style="color:#ccc; font-size:0.85rem">—</span>
+                        {/if}
+                      </td>
                     </tr>
                   {/each}
                 </tbody>
@@ -381,6 +401,56 @@
         {/if}
       </div>
     </div>
+
+  {#if viewingRoom}
+    <div class="modal-overlay" onclick={closeRoomDecks}>
+      <div class="modal-content modal-wide" onclick={(e)=>e.stopPropagation()}>
+        <div class="modal-header">
+          <h2>🎮 {viewingRoom.roomName || viewingRoom.id} — 使用牌組</h2>
+          <button class="close-btn" onclick={closeRoomDecks}>✕</button>
+        </div>
+        <div class="modal-body">
+          {#if !cardNameLoaded}
+            <p>載入卡名中...</p>
+          {:else}
+            <div class="battle-decks-grid">
+              {#each [0, 1] as playerIdx}
+                {@const seat = viewingRoom.seats?.[playerIdx]}
+                {@const isWinner = viewingRoom.gameState?.winner === playerIdx}
+                <div class="battle-deck-col">
+                  <div class="battle-deck-header" class:is-winner={isWinner}>
+                    <span class="player-label">P{playerIdx + 1}</span>
+                    <span class="player-name">{seat?.name || '（空）'}</span>
+                    {#if isWinner}<span class="winner-badge">🏆 勝者</span>{/if}
+                    <span class="deck-total">
+                      {seat?.deckEntries ? seat.deckEntries.reduce((s: number, e: any) => s + e.count, 0) : 0} 張
+                    </span>
+                  </div>
+                  {#if seat?.deckEntries && seat.deckEntries.length > 0}
+                    <table class="deck-table">
+                      <thead>
+                        <tr><th>卡牌名稱</th><th>數量</th></tr>
+                      </thead>
+                      <tbody>
+                        {#each seat.deckEntries as e}
+                          <tr>
+                            <td>{getCardLabel(e.cardId)}</td>
+                            <td style="text-align:center">x{e.count}</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  {:else}
+                    <p class="no-deck">無牌組資料</p>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
 
   {#if viewingUser}
     <div class="modal-overlay" onclick={closeDecks}>
@@ -822,4 +892,48 @@
   .room-code { font-size: 1rem; font-weight: bold; letter-spacing: 0.1em; color: #333; }
   .winner-cell { font-weight: bold; color: #0066cc; }
   .winner-col { color: #28a745; font-weight: 600; }
+
+  /* 對戰牌組 modal */
+  .modal-wide { max-width: 900px; }
+  .battle-decks-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+  }
+  .battle-deck-col {
+    border: 1px solid #eee;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .battle-deck-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    background: #f8f9fa;
+    border-bottom: 1px solid #eee;
+    flex-wrap: wrap;
+  }
+  .battle-deck-header.is-winner {
+    background: #d4edda;
+    border-bottom-color: #c3e6cb;
+  }
+  .player-label {
+    font-size: 0.75rem;
+    font-weight: bold;
+    background: #0066cc;
+    color: white;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+  }
+  .player-name { font-weight: bold; font-size: 1rem; flex: 1; }
+  .winner-badge {
+    font-size: 0.8rem;
+    background: #28a745;
+    color: white;
+    padding: 0.15rem 0.5rem;
+    border-radius: 10px;
+  }
+  .deck-total { font-size: 0.85rem; color: #666; margin-left: auto; }
+  .no-deck { padding: 1rem; color: #aaa; text-align: center; }
 </style>
