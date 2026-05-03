@@ -149,6 +149,21 @@
     if (!ts) return '未知';
     return new Date(ts.toDate()).toLocaleString('zh-TW');
   }
+
+  // 解析 userAgent 成簡短的瀏覽器/平台描述
+  function parseBrowser(ua: string | undefined): string {
+    if (!ua) return '-';
+    if (/Mobile|Android|iPhone|iPad/.test(ua)) {
+      if (/iPhone|iPad/.test(ua)) return '📱 iOS';
+      return '📱 Android';
+    }
+    if (/Edg\//.test(ua)) return '🌐 Edge';
+    if (/OPR\/|Opera/.test(ua)) return '🌐 Opera';
+    if (/Chrome\//.test(ua)) return '🌐 Chrome';
+    if (/Firefox\//.test(ua)) return '🦊 Firefox';
+    if (/Safari\//.test(ua)) return '🧭 Safari';
+    return '❓ 其他';
+  }
 </script>
 
 <main>
@@ -196,6 +211,8 @@
                     <th>UID</th>
                     <th>帳號類型</th>
                     <th>Email</th>
+                    <th>裝置ID</th>
+                    <th>瀏覽器</th>
                     <th>登入次數</th>
                     <th>最後登入時間</th>
                     <th>操作</th>
@@ -207,6 +224,8 @@
                       <td class="mono">{u.id}</td>
                       <td>{u.isAnonymous ? '匿名' : '會員'}</td>
                       <td>{u.email || '-'}</td>
+                      <td class="mono device-id" title={u.deviceId || '未知'}>{u.deviceId ? u.deviceId.slice(0, 8) : '-'}</td>
+                      <td class="browser-cell">{parseBrowser(u.userAgent)}</td>
                       <td>{u.loginCount || 1}</td>
                       <td>{formatDate(u.lastLoginAt || u.createdAt)}</td>
                       <td>
@@ -518,6 +537,14 @@
     font-family: ui-monospace, 'Cascadia Code', monospace;
     font-size: 0.85rem;
     color: #666;
+  }
+  .device-id {
+    cursor: help;
+    letter-spacing: 0.05em;
+  }
+  .browser-cell {
+    font-size: 0.9rem;
+    white-space: nowrap;
   }
 
   /* 意見回饋卡片 */
