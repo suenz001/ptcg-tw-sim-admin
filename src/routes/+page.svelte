@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { auth, db } from '$lib/firebase';
+  import { APP_VERSION } from '$lib';
   import { signInWithEmailAndPassword, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
   import { collection, getDocs, query, orderBy, limit } from 'firebase/firestore';
 
@@ -153,7 +154,7 @@
 <main>
     <header class="admin-header">
       <div class="header-content">
-        <h1>PTCG 後台系統 (公開測試版)</h1>
+        <h1>PTCG 後台系統 (公開測試版) <span class="version">{APP_VERSION}</span></h1>
         <div class="user-info">
           <span>訪客模式</span>
         </div>
@@ -389,6 +390,13 @@
     align-items: center;
     max-width: 1400px;
     margin: 0 auto;
+  }
+  .header-content h1 .version {
+    font-size: 0.85rem;
+    font-weight: normal;
+    opacity: 0.65;
+    margin-left: 0.4rem;
+    letter-spacing: 0.03em;
   }
   .header-content h1 {
     margin: 0;
