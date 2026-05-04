@@ -10,7 +10,7 @@
   let loginError = $state('');
   let isLoggingIn = $state(false);
 
-  let activeTab = $state<'overview' | 'users' | 'feedback' | 'battles'>('overview');
+  let activeTab = $state<'overview' | 'users' | 'feedback' | 'battles' | 'firebase'>('overview');
 
   let users = $state<any[]>([]);
   let feedbacks = $state<any[]>([]);
@@ -33,6 +33,10 @@
 
   // 對戰牌組檢視
   let viewingRoom = $state<any>(null);
+
+  // Firebase 用量估算（本次 Admin session）
+  let adminReadCount = $state(0);  // Firestore 讀取次數（估算）
+  let adminLoadCount = $state(0);  // 重新整理次數
 
   // 卡牌資訊查詢表：cardId -> { name, setCode, collectorNumber }
   interface CardInfo {
@@ -121,6 +125,8 @@
     try {
       const snap = await getDocs(collection(db, 'users', u.id, 'decks'));
       userDecks = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // 累計本次 session 的 Firestore 讀取數
+      adminReadCount += userDecks.length;
     } catch (err: any) {
       console.error(err);
       alert('無法載入牌組：' + err.message);
@@ -190,6 +196,10 @@
       const feedSnap = await getDocs(query(collection(db, 'feedbacks'), orderBy('createdAt', 'desc'), limit(50)));
       feedbacks = feedSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
+      // 累計本次 session 的 Firestore 讀取數與刷新次數
+      adminReadCount += users.length + rooms.length + feedbacks.length;
+      adminLoadCount++;
+
     } catch (err: any) {
       console.error('Failed to load data:', err);
       alert('無法載入資料，請確認是否具有管理員權限！\n' + err.message);
@@ -222,6 +232,15 @@
     if (/Safari\//.test(ua)) return '🧭 Safari';
     return '❓ 其他';
   }
+
+  // Firebase Spark 免費方案每日額度
+  const SPARK_DAILY_READS  = 50000;
+  const SPARK_DAILY_WRITES = 20000;
+  const SPARK_STORAGE_GB   = 1;
+  const SPARK_EGRESS_GB    = 10; // 每月
+
+  // 用量百分比計算（僅供估算參考）
+  let readPercent  = $derived(Math.min(100, (adminReadCount / SPARK_DAILY_READS) * 100));
 </script>
 
 <main>
@@ -240,6 +259,7 @@
         <button class:active={activeTab === 'users'} onclick={() => activeTab = 'users'}>👥 玩家列表</button>
         <button class:active={activeTab === 'feedback'} onclick={() => activeTab = 'feedback'}>💬 意見回饋</button>
         <button class:active={activeTab === 'battles'} onclick={() => activeTab = 'battles'}>🎮 對戰紀錄</button>
+        <button class:active={activeTab === 'firebase'} onclick={() => activeTab = 'firebase'}>🔥 Firebase 用量</button>
         <button class="refresh-btn" onclick={loadData} disabled={loadingData}>🔄 重新整理</button>
       </aside>
 
@@ -397,6 +417,97 @@
               <p style="text-align:center; color:#888; margin-top:2rem;">目前沒有符合條件的對戰紀錄</p>
             {/if}
             {/if}
+          </section>
+        {:else if activeTab === 'firebase'}
+          <section>
+            <h2>🔥 Firebase 用量監控</h2>
+
+            <!-- 本次 Session 統計 -->
+            <div class="firebase-card">
+              <h3>本次 Admin Session 讀取估算</h3>
+              <div class="firebase-stats-grid">
+                <div class="firebase-stat">
+                  <div class="firebase-stat-value">{adminReadCount}</div>
+                  <div>Firestore 讀取次數</div>
+                  <div class="firebase-stat-percent">≈ {readPercent.toFixed(2)}% / 每日免費額度</div>
+                </div>
+                <div class="firebase-stat">
+                  <div class="firebase-stat-value">{adminLoadCount}</div>
+                  <div>重新整理次數</div>
+                </div>
+              </div>
+              <p class="firebase-note">⚠️ 此數據為前端估算，僅計算本次 session 由 Admin 頁面發起的 Firestore 讀取。實際用量請至 Firebase Console 查看。</p>
+            </div>
+
+            <!-- Spark 免費方案額度對照 -->
+            <div class="firebase-card">
+              <h3>Firebase Spark（免費方案）每日額度對照</h3>
+              <table class="firebase-quota-table">
+                <thead>
+                  <tr>
+                    <th>項目</th>
+                    <th>免費額度</th>
+                    <th>說明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="quota-row-highlight">
+                    <td>📖 Firestore 讀取</td>
+                    <td class="quota-value">50,000 次 / 天</td>
+                    <td class="quota-desc">玩家載入牌組、對戰紀錄、回饋等皆計入</td>
+                  </tr>
+                  <tr>
+                    <td>✏️ Firestore 寫入</td>
+                    <td class="quota-value">20,000 次 / 天</td>
+                    <td class="quota-desc">建立/更新牌組、對戰狀態、回饋等</td>
+                  </tr>
+                  <tr>
+                    <td>🗑️ Firestore 刪除</td>
+                    <td class="quota-value">20,000 次 / 天</td>
+                    <td class="quota-desc">刪除牌組、對戰房間等</td>
+                  </tr>
+                  <tr>
+                    <td>💾 Firestore 儲存空間</td>
+                    <td class="quota-value">1 GiB</td>
+                    <td class="quota-desc">所有文件資料總量（含索引）</td>
+                  </tr>
+                  <tr>
+                    <td>🌐 Firestore 輸出流量</td>
+                    <td class="quota-value">10 GiB / 月</td>
+                    <td class="quota-desc">資料從 Firebase 傳到用戶端的總量</td>
+                  </tr>
+                  <tr>
+                    <td>🔐 Firebase Auth</td>
+                    <td class="quota-value">無限制</td>
+                    <td class="quota-desc">匿名登入、Email / Google 登入皆免費</td>
+                  </tr>
+                  <tr>
+                    <td>🌍 Hosting 流量</td>
+                    <td class="quota-value">10 GiB / 月</td>
+                    <td class="quota-desc">靜態檔案下載（目前使用 GitHub Pages）</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Firebase Console 快捷連結 -->
+            <div class="firebase-card">
+              <h3>Firebase Console 快捷連結</h3>
+              <div class="firebase-links">
+                <a class="firebase-link-btn firebase-link-primary" href="https://console.firebase.google.com/project/ptcg-tw-sim/usage" target="_blank" rel="noopener">
+                  📊 用量總覽
+                </a>
+                <a class="firebase-link-btn" href="https://console.firebase.google.com/project/ptcg-tw-sim/firestore" target="_blank" rel="noopener">
+                  🗄️ Firestore 資料庫
+                </a>
+                <a class="firebase-link-btn" href="https://console.firebase.google.com/project/ptcg-tw-sim/authentication/users" target="_blank" rel="noopener">
+                  👤 Authentication 用戶
+                </a>
+                <a class="firebase-link-btn" href="https://console.firebase.google.com/project/ptcg-tw-sim/firestore/usage" target="_blank" rel="noopener">
+                  📈 Firestore 用量圖表
+                </a>
+              </div>
+            </div>
           </section>
         {/if}
       </div>
@@ -936,4 +1047,112 @@
   }
   .deck-total { font-size: 0.85rem; color: #666; margin-left: auto; }
   .no-deck { padding: 1rem; color: #aaa; text-align: center; }
+
+  /* Firebase 用量監控 */
+  .firebase-card {
+    background: white;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+  .firebase-card h3 {
+    margin: 0 0 1rem 0;
+    font-size: 1.1rem;
+    color: #333;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 0.75rem;
+  }
+  .firebase-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+  .firebase-stat {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+    font-size: 0.9rem;
+    color: #555;
+  }
+  .firebase-stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: #e25822;
+    margin-bottom: 0.25rem;
+  }
+  .firebase-stat-percent {
+    font-size: 0.8rem;
+    color: #888;
+    margin-top: 0.25rem;
+  }
+  .firebase-note {
+    font-size: 0.85rem;
+    color: #888;
+    background: #fffbe6;
+    border-left: 3px solid #f6c90e;
+    padding: 0.75rem 1rem;
+    border-radius: 4px;
+    margin: 0;
+  }
+  .firebase-quota-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .firebase-quota-table th,
+  .firebase-quota-table td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid #eee;
+    text-align: left;
+    font-size: 0.9rem;
+  }
+  .firebase-quota-table th {
+    background: #f8f9fa;
+    font-weight: 600;
+    color: #555;
+  }
+  .quota-value {
+    font-weight: 600;
+    color: #0066cc;
+    white-space: nowrap;
+  }
+  .quota-desc {
+    color: #777;
+    font-size: 0.85rem;
+  }
+  .quota-row-highlight {
+    background: #fff8f0;
+  }
+  .quota-row-highlight .quota-value {
+    color: #e25822;
+  }
+  .firebase-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .firebase-link-btn {
+    display: inline-block;
+    padding: 0.6rem 1.2rem;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: #f8f9fa;
+    color: #333;
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: background 0.15s;
+  }
+  .firebase-link-btn:hover {
+    background: #e9ecef;
+  }
+  .firebase-link-primary {
+    background: #e25822;
+    color: white;
+    border-color: #e25822;
+  }
+  .firebase-link-primary:hover {
+    background: #c94d1e;
+  }
 </style>
