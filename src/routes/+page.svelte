@@ -3,7 +3,7 @@
   import { auth, db } from '$lib/firebase';
   import { APP_VERSION } from '$lib';
   import { signInWithEmailAndPassword, signOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-  import { collection, getDocs, query, orderBy, limit, where } from 'firebase/firestore';
+  import { collection, getDocs, query, orderBy, limit, getCountFromServer } from 'firebase/firestore';
 
   let email = $state('');
   let password = $state('');
@@ -16,10 +16,17 @@
   let feedbacks = $state<any[]>([]);
   let loadingData = $state(false);
 
+  // 真實總人數（從 getCountFromServer 取得，不受 limit 限制）
+  let totalUserCount = $state(0);
+
   // 玩家列表篩選
   let searchQuery = $state('');
   let filterType = $state<'all' | 'member' | 'anonymous'>('all');
   let filterBrowser = $state('all');
+
+  // 裝置ID合併模式
+  let mergeByDevice = $state(false);
+  let expandedDeviceGroups = $state<string[]>([]);
 
   // 對戰紀錄
   let rooms = $state<any[]>([]);
@@ -35,8 +42,8 @@
   let viewingRoom = $state<any>(null);
 
   // Firebase 用量估算（本次 Admin session）
-  let adminReadCount = $state(0);  // Firestore 讀取次數（估算）
-  let adminLoadCount = $state(0);  // 重新整理次數
+  let adminReadCount = $state(0);
+  let adminLoadCount = $state(0);
 
   // 卡牌資訊查詢表：cardId -> { name, setCode, collectorNumber }
   interface CardInfo {
@@ -75,7 +82,6 @@
     }
   }
 
-  // 回傳卡牌名稱（含版本與卡號），例如：奇諾栗鼠ex M4 · 071/083
   function getCardLabel(cardId: string): string {
     const info = cardInfoMap[cardId];
     if (!info) return `#${cardId}`;
@@ -120,12 +126,10 @@
     loadingDecks = true;
     userDecks = [];
     expandedDeckId = null;
-    // Load card names in parallel
     loadCardNames();
     try {
       const snap = await getDocs(collection(db, 'users', u.id, 'decks'));
       userDecks = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // 累計本次 session 的 Firestore 讀取數
       adminReadCount += userDecks.length;
     } catch (err: any) {
       console.error(err);
@@ -141,11 +145,20 @@
 
   function openRoomDecks(room: any) {
     viewingRoom = room;
-    loadCardNames(); // 確保卡名對應表已載入
+    loadCardNames();
   }
 
   function closeRoomDecks() {
     viewingRoom = null;
+  }
+
+  // 裝置ID群組展開/收合
+  function toggleDeviceGroup(deviceId: string) {
+    if (expandedDeviceGroups.includes(deviceId)) {
+      expandedDeviceGroups = expandedDeviceGroups.filter(d => d !== deviceId);
+    } else {
+      expandedDeviceGroups = [...expandedDeviceGroups, deviceId];
+    }
   }
 
   // 玩家列表篩選邏輯（client-side）
@@ -162,6 +175,53 @@
     }
     return true;
   }));
+
+  // 裝置ID合併後的群組列表
+  interface DeviceGroup {
+    deviceId: string;
+    accounts: any[];
+    totalLogins: number;
+    latestLoginTs: any;
+    browser: string;
+    memberCount: number;
+    anonymousCount: number;
+  }
+
+  let deviceGroups = $derived((() => {
+    const groupMap: Record<string, any[]> = {};
+    const noDevice: any[] = [];
+    for (const u of filteredUsers) {
+      if (u.deviceId) {
+        if (!groupMap[u.deviceId]) groupMap[u.deviceId] = [];
+        groupMap[u.deviceId].push(u);
+      } else {
+        noDevice.push(u);
+      }
+    }
+    const groups: DeviceGroup[] = Object.entries(groupMap)
+      .map(([deviceId, accounts]) => ({
+        deviceId,
+        accounts,
+        totalLogins: accounts.reduce((s, u) => s + (u.loginCount || 1), 0),
+        latestLoginTs: accounts.reduce((latest, u) => {
+          const ts = u.lastLoginAt || u.createdAt;
+          if (!latest) return ts;
+          if (!ts) return latest;
+          return ts.toMillis() > latest.toMillis() ? ts : latest;
+        }, null as any),
+        browser: parseBrowser(accounts[0]?.userAgent),
+        memberCount: accounts.filter(u => !u.isAnonymous).length,
+        anonymousCount: accounts.filter(u => u.isAnonymous).length,
+      }))
+      // 多帳號群組排前面，再依最新登入排序
+      .sort((a, b) => {
+        if (b.accounts.length !== a.accounts.length) return b.accounts.length - a.accounts.length;
+        const ta = a.latestLoginTs?.toMillis() ?? 0;
+        const tb = b.latestLoginTs?.toMillis() ?? 0;
+        return tb - ta;
+      });
+    return { groups, noDevice };
+  })());
 
   // 對戰紀錄篩選
   let filteredRooms = $derived(battleFilter === 'all'
@@ -185,9 +245,21 @@
   async function loadData() {
     loadingData = true;
     try {
-      // 載入玩家
+      // 取得真實總人數（不受 limit 限制，僅消耗少量 quota）
+      try {
+        const countSnap = await getCountFromServer(collection(db, 'users'));
+        totalUserCount = countSnap.data().count;
+      } catch {
+        // 若 count API 失敗，等載入後再以 users.length 補充
+      }
+
+      // 載入最新 100 筆玩家（用於表格操作）
       const usersSnap = await getDocs(query(collection(db, 'users'), orderBy('lastLoginAt', 'desc'), limit(100)));
       users = usersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+      // 若 count 查詢失敗，至少顯示已載入數量（可能不足）
+      if (totalUserCount === 0) totalUserCount = users.length;
+
       // 載入對戰紀錄
       const roomsSnap = await getDocs(query(collection(db, 'rooms'), orderBy('updatedAt', 'desc'), limit(100)));
       rooms = roomsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -196,7 +268,6 @@
       const feedSnap = await getDocs(query(collection(db, 'feedbacks'), orderBy('createdAt', 'desc'), limit(50)));
       feedbacks = feedSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-      // 累計本次 session 的 Firestore 讀取數與刷新次數
       adminReadCount += users.length + rooms.length + feedbacks.length;
       adminLoadCount++;
 
@@ -208,7 +279,6 @@
     }
   }
 
-  // Auto load data on mount
   onMount(() => {
     loadData();
   });
@@ -218,7 +288,6 @@
     return new Date(ts.toDate()).toLocaleString('zh-TW');
   }
 
-  // 解析 userAgent 成簡短的瀏覽器/平台描述
   function parseBrowser(ua: string | undefined): string {
     if (!ua) return '-';
     if (/Mobile|Android|iPhone|iPad/.test(ua)) {
@@ -237,10 +306,9 @@
   const SPARK_DAILY_READS  = 50000;
   const SPARK_DAILY_WRITES = 20000;
   const SPARK_STORAGE_GB   = 1;
-  const SPARK_EGRESS_GB    = 10; // 每月
+  const SPARK_EGRESS_GB    = 10;
 
-  // 用量百分比計算（僅供估算參考）
-  let readPercent  = $derived(Math.min(100, (adminReadCount / SPARK_DAILY_READS) * 100));
+  let readPercent = $derived(Math.min(100, (adminReadCount / SPARK_DAILY_READS) * 100));
 </script>
 
 <main>
@@ -272,7 +340,10 @@
             <div class="stats-grid">
               <div class="stat-card">
                 <h3>總註冊/訪客人數</h3>
-                <div class="value">{users.length}</div>
+                <div class="value">{totalUserCount}</div>
+                {#if users.length < totalUserCount}
+                  <div class="stat-note">（表格顯示最新 {users.length} 筆）</div>
+                {/if}
               </div>
               <div class="stat-card">
                 <h3>收到的意見回饋</h3>
@@ -282,7 +353,7 @@
           </section>
         {:else if activeTab === 'users'}
           <section>
-            <h2>玩家列表 (最新 100 筆)</h2>
+            <h2>玩家列表 (最新 {users.length} 筆 / 共 {totalUserCount} 人)</h2>
             <div class="filter-bar">
               <input
                 type="text"
@@ -306,40 +377,138 @@
                 <option value="📱 Android">Android</option>
                 <option value="❓ 其他">其他</option>
               </select>
+              <button
+                class="merge-toggle-btn"
+                class:active={mergeByDevice}
+                onclick={() => { mergeByDevice = !mergeByDevice; expandedDeviceGroups = []; }}
+                title="將裝置ID相同的帳號合併顯示為同一人"
+              >
+                🔗 合併相同裝置
+              </button>
               <span class="filter-count">{filteredUsers.length} / {users.length} 筆</span>
             </div>
-            <div class="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>UID</th>
-                    <th>帳號類型</th>
-                    <th>Email</th>
-                    <th>裝置ID</th>
-                    <th>瀏覽器</th>
-                    <th>登入次數</th>
-                    <th>最後登入時間</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each filteredUsers as u}
+
+            {#if !mergeByDevice}
+              <!-- 一般列表模式 -->
+              <div class="table-container">
+                <table>
+                  <thead>
                     <tr>
-                      <td class="mono">{u.id}</td>
-                      <td>{u.isAnonymous ? '匿名' : '會員'}</td>
-                      <td>{u.email || '-'}</td>
-                      <td class="mono device-id" title={u.deviceId || '未知'}>{u.deviceId ? u.deviceId.slice(0, 8) : '-'}</td>
-                      <td class="browser-cell">{parseBrowser(u.userAgent)}</td>
-                      <td>{u.loginCount || 1}</td>
-                      <td>{formatDate(u.lastLoginAt || u.createdAt)}</td>
-                      <td>
-                        <button class="action-btn" onclick={() => loadUserDecks(u)}>檢視牌組</button>
-                      </td>
+                      <th>UID</th>
+                      <th>帳號類型</th>
+                      <th>Email</th>
+                      <th>裝置ID</th>
+                      <th>瀏覽器</th>
+                      <th>登入次數</th>
+                      <th>最後登入時間</th>
+                      <th>操作</th>
                     </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {#each filteredUsers as u}
+                      <tr>
+                        <td class="mono">{u.id}</td>
+                        <td>{u.isAnonymous ? '匿名' : '會員'}</td>
+                        <td>{u.email || '-'}</td>
+                        <td class="mono device-id" title={u.deviceId || '未知'}>{u.deviceId ? u.deviceId.slice(0, 8) : '-'}</td>
+                        <td class="browser-cell">{parseBrowser(u.userAgent)}</td>
+                        <td>{u.loginCount || 1}</td>
+                        <td>{formatDate(u.lastLoginAt || u.createdAt)}</td>
+                        <td>
+                          <button class="action-btn" onclick={() => loadUserDecks(u)}>檢視牌組</button>
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {:else}
+              <!-- 裝置ID合併模式 -->
+              <div class="merge-legend">
+                <span class="badge-multi">🔗 多帳號</span> 同一裝置有多個帳號
+                <span style="margin-left:1rem; color:#888; font-size:0.85rem">共 {deviceGroups.groups.length} 個裝置 + {deviceGroups.noDevice.length} 個無裝置記錄</span>
+              </div>
+              <div class="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>裝置ID</th>
+                      <th>帳號數</th>
+                      <th>帳號類型</th>
+                      <th>瀏覽器</th>
+                      <th>總登入次數</th>
+                      <th>最後登入時間</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each deviceGroups.groups as group}
+                      {@const isExpanded = expandedDeviceGroups.includes(group.deviceId)}
+                      {@const isMulti = group.accounts.length > 1}
+                      <!-- 群組摘要列 -->
+                      <tr class="group-row" class:group-multi={isMulti}>
+                        <td class="mono device-id" title={group.deviceId}>
+                          {group.deviceId.slice(0, 8)}
+                        </td>
+                        <td>
+                          {#if isMulti}
+                            <span class="badge-multi">🔗 {group.accounts.length} 個帳號</span>
+                          {:else}
+                            <span class="badge-single">1 個帳號</span>
+                          {/if}
+                        </td>
+                        <td class="account-type-cell">
+                          {#if group.memberCount > 0}<span class="type-member">{group.memberCount} 會員</span>{/if}
+                          {#if group.anonymousCount > 0}<span class="type-anon">{group.anonymousCount} 匿名</span>{/if}
+                        </td>
+                        <td class="browser-cell">{group.browser}</td>
+                        <td>{group.totalLogins}</td>
+                        <td>{formatDate(group.latestLoginTs)}</td>
+                        <td>
+                          {#if isMulti}
+                            <button class="expand-group-btn" onclick={() => toggleDeviceGroup(group.deviceId)}>
+                              {isExpanded ? '▲ 收合' : '▼ 展開'}
+                            </button>
+                          {:else}
+                            <button class="action-btn" onclick={() => loadUserDecks(group.accounts[0])}>檢視牌組</button>
+                          {/if}
+                        </td>
+                      </tr>
+                      <!-- 展開後的子帳號列 -->
+                      {#if isExpanded}
+                        {#each group.accounts as u}
+                          <tr class="sub-row">
+                            <td class="mono sub-uid" colspan="1" title={u.id}>↳ {u.id.slice(0, 12)}…</td>
+                            <td>{u.isAnonymous ? '匿名' : '會員'}</td>
+                            <td colspan="2">{u.email || '-'}</td>
+                            <td>{u.loginCount || 1}</td>
+                            <td>{formatDate(u.lastLoginAt || u.createdAt)}</td>
+                            <td>
+                              <button class="action-btn" onclick={() => loadUserDecks(u)}>檢視牌組</button>
+                            </td>
+                          </tr>
+                        {/each}
+                      {/if}
+                    {/each}
+
+                    <!-- 無裝置ID的帳號 -->
+                    {#each deviceGroups.noDevice as u}
+                      <tr>
+                        <td class="mono" style="color:#ccc">—</td>
+                        <td>{u.isAnonymous ? '匿名' : '會員'}</td>
+                        <td>{u.email || '-'}</td>
+                        <td class="browser-cell">{parseBrowser(u.userAgent)}</td>
+                        <td>{u.loginCount || 1}</td>
+                        <td>{formatDate(u.lastLoginAt || u.createdAt)}</td>
+                        <td>
+                          <button class="action-btn" onclick={() => loadUserDecks(u)}>檢視牌組</button>
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {/if}
           </section>
         {:else if activeTab === 'feedback'}
           <section>
@@ -422,7 +591,6 @@
           <section>
             <h2>🔥 Firebase 用量監控</h2>
 
-            <!-- 本次 Session 統計 -->
             <div class="firebase-card">
               <h3>本次 Admin Session 讀取估算</h3>
               <div class="firebase-stats-grid">
@@ -439,7 +607,6 @@
               <p class="firebase-note">⚠️ 此數據為前端估算，僅計算本次 session 由 Admin 頁面發起的 Firestore 讀取。實際用量請至 Firebase Console 查看。</p>
             </div>
 
-            <!-- Spark 免費方案額度對照 -->
             <div class="firebase-card">
               <h3>Firebase Spark（免費方案）每日額度對照</h3>
               <table class="firebase-quota-table">
@@ -490,7 +657,6 @@
               </table>
             </div>
 
-            <!-- Firebase Console 快捷連結 -->
             <div class="firebase-card">
               <h3>Firebase Console 快捷連結</h3>
               <div class="firebase-links">
@@ -632,303 +798,77 @@
     max-width: 400px;
     text-align: center;
   }
-  .login-box h1 {
-    margin-top: 0;
-    font-size: 1.5rem;
-  }
-  .login-box form {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    margin-top: 1.5rem;
-  }
-  .login-box input {
-    padding: 0.75rem;
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    font-size: 1rem;
-  }
-  .login-box button {
-    padding: 0.75rem;
-    background: #0066cc;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    font-size: 1rem;
-    font-weight: bold;
-    cursor: pointer;
-  }
-  .login-box button:disabled {
-    opacity: 0.7;
-    cursor: not-allowed;
-  }
-  .error {
-    color: red;
-    font-size: 0.9rem;
-  }
-  .divider {
-    margin: 1.5rem 0;
-    color: #888;
-    position: relative;
-  }
-  .divider::before, .divider::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    width: 40%;
-    height: 1px;
-    background: #ddd;
-  }
+  .login-box h1 { margin-top: 0; font-size: 1.5rem; }
+  .login-box form { display: flex; flex-direction: column; gap: 1rem; margin-top: 1.5rem; }
+  .login-box input { padding: 0.75rem; border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
+  .login-box button { padding: 0.75rem; background: #0066cc; color: white; border: none; border-radius: 6px; font-size: 1rem; font-weight: bold; cursor: pointer; }
+  .login-box button:disabled { opacity: 0.7; cursor: not-allowed; }
+  .error { color: red; font-size: 0.9rem; }
+  .divider { margin: 1.5rem 0; color: #888; position: relative; }
+  .divider::before, .divider::after { content: ''; position: absolute; top: 50%; width: 40%; height: 1px; background: #ddd; }
   .divider::before { left: 0; }
   .divider::after { right: 0; }
-  .google-btn {
-    width: 100%;
-    padding: 0.75rem;
-    background: #fff;
-    color: #444;
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    font-size: 1rem;
-    font-weight: bold;
-    cursor: pointer;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-  }
-  .google-btn:hover {
-    background: #f9f9f9;
-  }
-  .google-btn:disabled {
-    opacity: 0.7;
-    cursor: not-allowed;
-  }
+  .google-btn { width: 100%; padding: 0.75rem; background: #fff; color: #444; border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; font-weight: bold; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .google-btn:hover { background: #f9f9f9; }
+  .google-btn:disabled { opacity: 0.7; cursor: not-allowed; }
 
   /* 後台佈局 */
-  .admin-header {
-    background: #1a2a3a;
-    color: white;
-    padding: 1rem 2rem;
-  }
-  .header-content {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    max-width: 1400px;
-    margin: 0 auto;
-  }
-  .header-content h1 .version {
-    font-size: 0.85rem;
-    font-weight: normal;
-    opacity: 0.65;
-    margin-left: 0.4rem;
-    letter-spacing: 0.03em;
-  }
-  .header-content h1 {
-    margin: 0;
-    font-size: 1.25rem;
-  }
-  .user-info {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    font-size: 0.9rem;
-  }
-  .logout-btn {
-    background: rgba(255,255,255,0.1);
-    border: 1px solid rgba(255,255,255,0.2);
-    color: white;
-    padding: 0.3rem 0.8rem;
-    border-radius: 4px;
-    cursor: pointer;
-  }
-  .logout-btn:hover {
-    background: rgba(255,255,255,0.2);
-  }
+  .admin-header { background: #1a2a3a; color: white; padding: 1rem 2rem; }
+  .header-content { display: flex; justify-content: space-between; align-items: center; max-width: 1400px; margin: 0 auto; }
+  .header-content h1 .version { font-size: 0.85rem; font-weight: normal; opacity: 0.65; margin-left: 0.4rem; letter-spacing: 0.03em; }
+  .header-content h1 { margin: 0; font-size: 1.25rem; }
+  .user-info { display: flex; align-items: center; gap: 1rem; font-size: 0.9rem; }
+  .logout-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; padding: 0.3rem 0.8rem; border-radius: 4px; cursor: pointer; }
+  .logout-btn:hover { background: rgba(255,255,255,0.2); }
 
-  .dashboard {
-    display: flex;
-    max-width: 1400px;
-    margin: 0 auto;
-    min-height: calc(100vh - 64px);
-  }
-  .sidebar {
-    width: 250px;
-    background: white;
-    border-right: 1px solid #e0e0e0;
-    padding: 1.5rem 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-  .sidebar button {
-    text-align: left;
-    padding: 0.75rem 1rem;
-    background: none;
-    border: none;
-    border-radius: 6px;
-    font-size: 1rem;
-    cursor: pointer;
-    color: #444;
-  }
-  .sidebar button:hover {
-    background: #f0f0f0;
-  }
-  .sidebar button.active {
-    background: #e6f0fa;
-    color: #0066cc;
-    font-weight: bold;
-  }
-  .sidebar .refresh-btn {
-    margin-top: auto;
-    text-align: center;
-    background: #f0f0f0;
-    font-size: 0.9rem;
-  }
+  .dashboard { display: flex; max-width: 1400px; margin: 0 auto; min-height: calc(100vh - 64px); }
+  .sidebar { width: 250px; background: white; border-right: 1px solid #e0e0e0; padding: 1.5rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .sidebar button { text-align: left; padding: 0.75rem 1rem; background: none; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; color: #444; }
+  .sidebar button:hover { background: #f0f0f0; }
+  .sidebar button.active { background: #e6f0fa; color: #0066cc; font-weight: bold; }
+  .sidebar .refresh-btn { margin-top: auto; text-align: center; background: #f0f0f0; font-size: 0.9rem; }
 
-  .content {
-    flex: 1;
-    padding: 2rem;
-  }
-  .content h2 {
-    margin-top: 0;
-    margin-bottom: 1.5rem;
-    color: #222;
-  }
+  .content { flex: 1; padding: 2rem; }
+  .content h2 { margin-top: 0; margin-bottom: 1.5rem; color: #222; }
 
   /* 總覽卡片 */
-  .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1.5rem;
-  }
-  .stat-card {
-    background: white;
-    padding: 1.5rem;
-    border-radius: 10px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-  }
-  .stat-card h3 {
-    margin: 0 0 0.5rem 0;
-    font-size: 1rem;
-    color: #666;
-  }
-  .stat-card .value {
-    font-size: 2.5rem;
-    font-weight: bold;
-    color: #0066cc;
-  }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; }
+  .stat-card { background: white; padding: 1.5rem; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+  .stat-card h3 { margin: 0 0 0.5rem 0; font-size: 1rem; color: #666; }
+  .stat-card .value { font-size: 2.5rem; font-weight: bold; color: #0066cc; }
+  .stat-note { font-size: 0.8rem; color: #aaa; margin-top: 0.25rem; }
 
   /* 表格 */
-  .table-container {
-    background: white;
-    border-radius: 10px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    overflow: hidden;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    text-align: left;
-  }
-  th, td {
-    padding: 1rem;
-    border-bottom: 1px solid #eee;
-  }
-  th {
-    background: #f8f9fa;
-    font-weight: 600;
-    color: #555;
-  }
-  .mono {
-    font-family: ui-monospace, 'Cascadia Code', monospace;
-    font-size: 0.85rem;
-    color: #666;
-  }
-  .device-id {
-    cursor: help;
-    letter-spacing: 0.05em;
-  }
-  .browser-cell {
-    font-size: 0.9rem;
-    white-space: nowrap;
-  }
+  .table-container { background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; text-align: left; }
+  th, td { padding: 1rem; border-bottom: 1px solid #eee; }
+  th { background: #f8f9fa; font-weight: 600; color: #555; }
+  .mono { font-family: ui-monospace, 'Cascadia Code', monospace; font-size: 0.85rem; color: #666; }
+  .device-id { cursor: help; letter-spacing: 0.05em; }
+  .browser-cell { font-size: 0.9rem; white-space: nowrap; }
 
-  /* 意見回饋卡片 */
-  .feedback-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-  .feedback-card {
-    background: white;
-    padding: 1.5rem;
-    border-radius: 10px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-  }
-  .fb-meta {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 0.8rem;
-    font-size: 0.85rem;
-  }
-  .fb-time {
-    color: #888;
-  }
-  .fb-uid {
-    color: #aaa;
-  }
-  .fb-content {
-    line-height: 1.6;
-    white-space: pre-wrap;
-    color: #333;
-  }
+  /* 意見回饋 */
+  .feedback-list { display: flex; flex-direction: column; gap: 1rem; }
+  .feedback-card { background: white; padding: 1.5rem; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+  .fb-meta { display: flex; justify-content: space-between; margin-bottom: 0.8rem; font-size: 0.85rem; }
+  .fb-time { color: #888; }
+  .fb-uid { color: #aaa; }
+  .fb-content { line-height: 1.6; white-space: pre-wrap; color: #333; }
 
-  /* 模態視窗與操作按鈕 */
+  /* 按鈕 */
   .action-btn { padding: 0.4rem 0.8rem; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
   .action-btn:hover { background: #218838; }
 
-  .modal-overlay {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.5);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 1000;
-  }
-  .modal-content {
-    background: white;
-    border-radius: 12px;
-    width: 90%;
-    max-width: 600px;
-    max-height: 80vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-  }
-  .modal-header {
-    padding: 1.5rem;
-    border-bottom: 1px solid #eee;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
+  /* 模態視窗 */
+  .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+  .modal-content { background: white; border-radius: 12px; width: 90%; max-width: 600px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+  .modal-header { padding: 1.5rem; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
   .modal-header h2 { margin: 0; font-size: 1.25rem; }
-  .close-btn {
-    background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #888;
-  }
-  .modal-body {
-    padding: 1.5rem;
-    overflow-y: auto;
-  }
-  .deck-list {
-    list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem;
-  }
-  .deck-item {
-    border: 1px solid #eee; border-radius: 8px; background: #fcfcfc; overflow: hidden;
-  }
-  .deck-header-btn {
-    width: 100%; padding: 1rem; background: none; border: none; cursor: pointer;
-    display: flex; align-items: center; gap: 1rem; text-align: left; font: inherit;
-  }
+  .close-btn { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #888; }
+  .modal-body { padding: 1.5rem; overflow-y: auto; }
+  .deck-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+  .deck-item { border: 1px solid #eee; border-radius: 8px; background: #fcfcfc; overflow: hidden; }
+  .deck-header-btn { width: 100%; padding: 1rem; background: none; border: none; cursor: pointer; display: flex; align-items: center; gap: 1rem; text-align: left; font: inherit; }
   .deck-header-btn:hover { background: #f0f5ff; }
   .deck-name { font-weight: bold; font-size: 1.1rem; color: #0066cc; flex: 1; }
   .deck-count { font-size: 0.85rem; color: #666; }
@@ -940,46 +880,77 @@
   .deck-table td:last-child { text-align: center; width: 60px; }
 
   /* 篩選列 */
-  .filter-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 1rem;
-    flex-wrap: wrap;
-  }
-  .filter-input {
-    flex: 1;
-    min-width: 200px;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    font-size: 0.9rem;
-  }
+  .filter-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .filter-input { flex: 1; min-width: 200px; padding: 0.5rem 0.75rem; border: 1px solid #ccc; border-radius: 6px; font-size: 0.9rem; }
   .filter-input:focus { outline: none; border-color: #0066cc; }
-  .filter-select {
-    padding: 0.5rem 0.75rem;
+  .filter-select { padding: 0.5rem 0.75rem; border: 1px solid #ccc; border-radius: 6px; font-size: 0.9rem; background: white; cursor: pointer; }
+  .filter-count { font-size: 0.85rem; color: #888; white-space: nowrap; }
+
+  /* 合併按鈕 */
+  .merge-toggle-btn {
+    padding: 0.5rem 1rem;
     border: 1px solid #ccc;
     border-radius: 6px;
-    font-size: 0.9rem;
-    background: white;
-    cursor: pointer;
-  }
-  .filter-count {
-    font-size: 0.85rem;
-    color: #888;
-    white-space: nowrap;
-  }
-
-  /* 對戰篩選按鈕 */
-  .battle-filter-btn {
-    padding: 0.4rem 1rem;
-    border: 1px solid #ccc;
-    border-radius: 20px;
     background: white;
     font-size: 0.9rem;
     cursor: pointer;
     color: #555;
+    white-space: nowrap;
   }
+  .merge-toggle-btn:hover { background: #f0f0f0; }
+  .merge-toggle-btn.active { background: #fff3cd; border-color: #ffc107; color: #856404; font-weight: 600; }
+
+  /* 合併模式圖例 */
+  .merge-legend {
+    font-size: 0.85rem;
+    color: #666;
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  /* 群組列樣式 */
+  .group-row { background: #fafafa; }
+  .group-multi { background: #fffbe6; }
+  .group-multi:hover { background: #fff8d6; }
+
+  /* 子帳號列 */
+  .sub-row { background: #f8f9ff; }
+  .sub-row td { padding: 0.6rem 1rem; font-size: 0.88rem; border-bottom: 1px dashed #e0e0e0; }
+  .sub-uid { color: #888; font-size: 0.82rem; }
+
+  /* 帳號類型標籤 */
+  .badge-multi {
+    display: inline-block;
+    background: #ffc107;
+    color: #5a3e00;
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 10px;
+    white-space: nowrap;
+  }
+  .badge-single { display: inline-block; font-size: 0.82rem; color: #888; }
+  .account-type-cell { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+  .type-member { background: #d4edda; color: #155724; font-size: 0.78rem; padding: 0.1rem 0.45rem; border-radius: 8px; }
+  .type-anon { background: #e2e3e5; color: #383d41; font-size: 0.78rem; padding: 0.1rem 0.45rem; border-radius: 8px; }
+
+  /* 展開群組按鈕 */
+  .expand-group-btn {
+    padding: 0.35rem 0.75rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: white;
+    font-size: 0.82rem;
+    cursor: pointer;
+    color: #555;
+  }
+  .expand-group-btn:hover { background: #f0f0f0; }
+
+  /* 對戰篩選按鈕 */
+  .battle-filter-btn { padding: 0.4rem 1rem; border: 1px solid #ccc; border-radius: 20px; background: white; font-size: 0.9rem; cursor: pointer; color: #555; }
   .battle-filter-btn:hover { background: #f0f0f0; }
   .battle-filter-btn.active { background: #0066cc; color: white; border-color: #0066cc; }
   .battle-filter-btn.playing.active { background: #28a745; border-color: #28a745; }
@@ -987,14 +958,7 @@
   .battle-filter-btn.ended.active { background: #6c757d; border-color: #6c757d; }
 
   /* 狀態徽章 */
-  .status-badge {
-    display: inline-block;
-    padding: 0.2rem 0.6rem;
-    border-radius: 12px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    white-space: nowrap;
-  }
+  .status-badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
   .status-playing { background: #d4edda; color: #155724; }
   .status-lobby   { background: #fff3cd; color: #856404; }
   .status-ended   { background: #e2e3e5; color: #383d41; }
@@ -1006,153 +970,34 @@
 
   /* 對戰牌組 modal */
   .modal-wide { max-width: 900px; }
-  .battle-decks-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1.5rem;
-  }
-  .battle-deck-col {
-    border: 1px solid #eee;
-    border-radius: 8px;
-    overflow: hidden;
-  }
-  .battle-deck-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.75rem 1rem;
-    background: #f8f9fa;
-    border-bottom: 1px solid #eee;
-    flex-wrap: wrap;
-  }
-  .battle-deck-header.is-winner {
-    background: #d4edda;
-    border-bottom-color: #c3e6cb;
-  }
-  .player-label {
-    font-size: 0.75rem;
-    font-weight: bold;
-    background: #0066cc;
-    color: white;
-    padding: 0.1rem 0.4rem;
-    border-radius: 4px;
-  }
+  .battle-decks-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  .battle-deck-col { border: 1px solid #eee; border-radius: 8px; overflow: hidden; }
+  .battle-deck-header { display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem 1rem; background: #f8f9fa; border-bottom: 1px solid #eee; flex-wrap: wrap; }
+  .battle-deck-header.is-winner { background: #d4edda; border-bottom-color: #c3e6cb; }
+  .player-label { font-size: 0.75rem; font-weight: bold; background: #0066cc; color: white; padding: 0.1rem 0.4rem; border-radius: 4px; }
   .player-name { font-weight: bold; font-size: 1rem; flex: 1; }
-  .winner-badge {
-    font-size: 0.8rem;
-    background: #28a745;
-    color: white;
-    padding: 0.15rem 0.5rem;
-    border-radius: 10px;
-  }
+  .winner-badge { font-size: 0.8rem; background: #28a745; color: white; padding: 0.15rem 0.5rem; border-radius: 10px; }
   .deck-total { font-size: 0.85rem; color: #666; margin-left: auto; }
   .no-deck { padding: 1rem; color: #aaa; text-align: center; }
 
   /* Firebase 用量監控 */
-  .firebase-card {
-    background: white;
-    border-radius: 10px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    padding: 1.5rem;
-    margin-bottom: 1.5rem;
-  }
-  .firebase-card h3 {
-    margin: 0 0 1rem 0;
-    font-size: 1.1rem;
-    color: #333;
-    border-bottom: 1px solid #eee;
-    padding-bottom: 0.75rem;
-  }
-  .firebase-stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 1rem;
-    margin-bottom: 1rem;
-  }
-  .firebase-stat {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 1rem;
-    text-align: center;
-    font-size: 0.9rem;
-    color: #555;
-  }
-  .firebase-stat-value {
-    font-size: 2rem;
-    font-weight: bold;
-    color: #e25822;
-    margin-bottom: 0.25rem;
-  }
-  .firebase-stat-percent {
-    font-size: 0.8rem;
-    color: #888;
-    margin-top: 0.25rem;
-  }
-  .firebase-note {
-    font-size: 0.85rem;
-    color: #888;
-    background: #fffbe6;
-    border-left: 3px solid #f6c90e;
-    padding: 0.75rem 1rem;
-    border-radius: 4px;
-    margin: 0;
-  }
-  .firebase-quota-table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-  .firebase-quota-table th,
-  .firebase-quota-table td {
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid #eee;
-    text-align: left;
-    font-size: 0.9rem;
-  }
-  .firebase-quota-table th {
-    background: #f8f9fa;
-    font-weight: 600;
-    color: #555;
-  }
-  .quota-value {
-    font-weight: 600;
-    color: #0066cc;
-    white-space: nowrap;
-  }
-  .quota-desc {
-    color: #777;
-    font-size: 0.85rem;
-  }
-  .quota-row-highlight {
-    background: #fff8f0;
-  }
-  .quota-row-highlight .quota-value {
-    color: #e25822;
-  }
-  .firebase-links {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-  }
-  .firebase-link-btn {
-    display: inline-block;
-    padding: 0.6rem 1.2rem;
-    border-radius: 6px;
-    border: 1px solid #ccc;
-    background: #f8f9fa;
-    color: #333;
-    text-decoration: none;
-    font-size: 0.9rem;
-    transition: background 0.15s;
-  }
-  .firebase-link-btn:hover {
-    background: #e9ecef;
-  }
-  .firebase-link-primary {
-    background: #e25822;
-    color: white;
-    border-color: #e25822;
-  }
-  .firebase-link-primary:hover {
-    background: #c94d1e;
-  }
+  .firebase-card { background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); padding: 1.5rem; margin-bottom: 1.5rem; }
+  .firebase-card h3 { margin: 0 0 1rem 0; font-size: 1.1rem; color: #333; border-bottom: 1px solid #eee; padding-bottom: 0.75rem; }
+  .firebase-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+  .firebase-stat { background: #f8f9fa; border-radius: 8px; padding: 1rem; text-align: center; font-size: 0.9rem; color: #555; }
+  .firebase-stat-value { font-size: 2rem; font-weight: bold; color: #e25822; margin-bottom: 0.25rem; }
+  .firebase-stat-percent { font-size: 0.8rem; color: #888; margin-top: 0.25rem; }
+  .firebase-note { font-size: 0.85rem; color: #888; background: #fffbe6; border-left: 3px solid #f6c90e; padding: 0.75rem 1rem; border-radius: 4px; margin: 0; }
+  .firebase-quota-table { width: 100%; border-collapse: collapse; }
+  .firebase-quota-table th, .firebase-quota-table td { padding: 0.75rem 1rem; border-bottom: 1px solid #eee; text-align: left; font-size: 0.9rem; }
+  .firebase-quota-table th { background: #f8f9fa; font-weight: 600; color: #555; }
+  .quota-value { font-weight: 600; color: #0066cc; white-space: nowrap; }
+  .quota-desc { color: #777; font-size: 0.85rem; }
+  .quota-row-highlight { background: #fff8f0; }
+  .quota-row-highlight .quota-value { color: #e25822; }
+  .firebase-links { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+  .firebase-link-btn { display: inline-block; padding: 0.6rem 1.2rem; border-radius: 6px; border: 1px solid #ccc; background: #f8f9fa; color: #333; text-decoration: none; font-size: 0.9rem; transition: background 0.15s; }
+  .firebase-link-btn:hover { background: #e9ecef; }
+  .firebase-link-primary { background: #e25822; color: white; border-color: #e25822; }
+  .firebase-link-primary:hover { background: #c94d1e; }
 </style>
