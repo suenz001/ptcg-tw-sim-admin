@@ -6,7 +6,10 @@
     signInWithEmailAndPassword, signOut,
     GoogleAuthProvider, signInWithPopup, onAuthStateChanged
   } from 'firebase/auth';
-  import { collection, getDocs, query, orderBy, limit, getCountFromServer } from 'firebase/firestore';
+  import {
+    collection, getDocs, query, orderBy, limit, getCountFromServer,
+    doc, updateDoc, deleteDoc, serverTimestamp,
+  } from 'firebase/firestore';
 
   // ── Auth ───────────────────────────────────────────────────────────────────
   const ADMIN_EMAIL = 'suenz001@yahoo.com.tw';
@@ -62,6 +65,46 @@
   // Firebase 用量估算
   let adminReadCount = $state(0);
   let adminLoadCount = $state(0);
+
+  // ── 意見回覆（v2.53 配合主站新增）─────────────────────────────────────────
+  let replyDrafts  = $state<Record<string, string>>({});
+  let savingFbId   = $state<string | null>(null);
+
+  async function submitReply(fbId: string) {
+    const replyText = replyDrafts[fbId]?.trim();
+    if (!replyText || savingFbId) return;
+    savingFbId = fbId;
+    try {
+      await updateDoc(doc(db, 'feedbacks', fbId), {
+        reply: replyText,
+        repliedAt: serverTimestamp(),
+        repliedBy: currentUser?.email ?? 'admin',
+      });
+      replyDrafts[fbId] = '';
+      await loadData();
+    } catch (err: any) {
+      alert('送出回覆失敗：' + err.message);
+    } finally {
+      savingFbId = null;
+    }
+  }
+
+  async function deleteFeedback(fbId: string) {
+    if (!confirm('確定要刪除這筆回饋嗎？此動作無法復原。')) return;
+    savingFbId = fbId;
+    try {
+      await deleteDoc(doc(db, 'feedbacks', fbId));
+      await loadData();
+    } catch (err: any) {
+      alert('刪除失敗：' + err.message);
+    } finally {
+      savingFbId = null;
+    }
+  }
+
+  function startEditReply(fbId: string, existingReply: string) {
+    replyDrafts[fbId] = existingReply;
+  }
 
   // 卡牌對應表
   interface CardInfo { name: string; setCode: string; collectorNumber: string; }
@@ -581,15 +624,64 @@
       <!-- ════════════ 意見回饋 ════════════ -->
       {:else if activeTab === 'feedback'}
         <section>
-          <h2>意見回饋（最新 50 筆）</h2>
+          <h2>意見回饋（最新 50 筆）— 可加回覆給玩家</h2>
+          <p class="feedback-intro">
+            🛈 玩家在主站打開意見回饋視窗時，會看到自己提交過的歷史回饋與你在這裡寫的回覆。
+            送出/編輯/刪除回覆會即時同步到玩家端。
+          </p>
           <div class="feedback-list">
             {#each feedbacks as fb}
-              <div class="feedback-card">
+              <div class="feedback-card" class:has-reply={!!fb.reply}>
                 <div class="fb-meta">
-                  <span class="fb-time">{formatDate(fb.createdAt)}</span>
-                  <span class="fb-uid mono">UID: {fb.uid}</span>
+                  <span class="fb-time">📅 {formatDate(fb.createdAt)}</span>
+                  <span class="fb-uid mono">UID: {fb.uid?.slice(0, 12)}…</span>
+                  {#if fb.deviceId}
+                    <span class="fb-device mono">device: {fb.deviceId.slice(0, 8)}</span>
+                  {/if}
+                  {#if fb.reply}<span class="fb-replied-tag">✓ 已回覆</span>{/if}
                 </div>
                 <div class="fb-content">{fb.content}</div>
+                {#if fb.userAgent}
+                  <details class="fb-ua">
+                    <summary>User Agent</summary>
+                    <code>{fb.userAgent}</code>
+                  </details>
+                {/if}
+                {#if fb.reply}
+                  <div class="existing-reply">
+                    <div class="reply-header">
+                      <strong>💬 你的回覆</strong>
+                      <span class="reply-time">{formatDate(fb.repliedAt)}</span>
+                      {#if fb.repliedBy}<span class="reply-by">by {fb.repliedBy}</span>{/if}
+                    </div>
+                    <div class="reply-text">{fb.reply}</div>
+                  </div>
+                {/if}
+                <div class="reply-form">
+                  <textarea
+                    placeholder={fb.reply ? '編輯回覆內容...' : '輸入回覆內容...'}
+                    bind:value={replyDrafts[fb.id]}
+                    rows="3"
+                    disabled={savingFbId === fb.id}
+                  ></textarea>
+                  <div class="reply-actions">
+                    {#if fb.reply && !replyDrafts[fb.id]}
+                      <button class="btn-edit" onclick={() => startEditReply(fb.id, fb.reply ?? '')}>編輯既有回覆</button>
+                    {/if}
+                    <button
+                      class="btn-submit-reply"
+                      onclick={() => submitReply(fb.id)}
+                      disabled={!replyDrafts[fb.id]?.trim() || savingFbId === fb.id}
+                    >
+                      {savingFbId === fb.id ? '送出中...' : (fb.reply ? '更新回覆' : '送出回覆')}
+                    </button>
+                    <button
+                      class="btn-delete-fb"
+                      onclick={() => deleteFeedback(fb.id)}
+                      disabled={savingFbId === fb.id}
+                    >🗑 刪除</button>
+                  </div>
+                </div>
               </div>
             {/each}
             {#if feedbacks.length === 0}<p>目前沒有任何意見回饋。</p>{/if}
@@ -880,12 +972,31 @@
   .type-anon   { display:inline-block; background:#e2e3e5; color:#383d41; font-size:0.75rem; font-weight:600; padding:0.1rem 0.45rem; border-radius:8px; white-space:nowrap; }
 
   /* ── 意見回饋 ──────────────────────────────────────────────────────────── */
+  .feedback-intro { font-size:0.84rem; color:#666; background:#f7f9fc; border-left:3px solid #0066cc; padding:0.6rem 0.9rem; border-radius:4px; margin-bottom:1rem; }
   .feedback-list { display:flex; flex-direction:column; gap:0.75rem; }
   .feedback-card { background:white; padding:1.1rem 1.25rem; border-radius:10px; box-shadow:0 2px 6px rgba(0,0,0,0.05); }
-  .fb-meta { display:flex; justify-content:space-between; margin-bottom:0.6rem; font-size:0.82rem; }
-  .fb-time { color:#888; }
-  .fb-uid { color:#bbb; }
-  .fb-content { line-height:1.6; white-space:pre-wrap; color:#333; font-size:0.9rem; }
+  .feedback-card.has-reply { border-left:3px solid #28a745; }
+  .fb-meta { display:flex; flex-wrap:wrap; gap:0.4rem 1rem; margin-bottom:0.6rem; font-size:0.78rem; align-items:center; }
+  .fb-time { color:#666; }
+  .fb-uid, .fb-device { color:#aaa; }
+  .fb-replied-tag { background:#28a745; color:#fff; padding:0.1rem 0.5rem; border-radius:3px; font-weight:600; font-size:0.74rem; }
+  .fb-content { line-height:1.6; white-space:pre-wrap; color:#333; font-size:0.9rem; margin-bottom:0.5rem; }
+  .fb-ua { font-size:0.75rem; color:#888; margin:0.4rem 0; }
+  .fb-ua summary { cursor:pointer; }
+  .fb-ua code { display:block; margin-top:0.3rem; padding:0.4rem; word-break:break-all; background:#f8f8f8; border-radius:3px; font-size:0.72rem; }
+  .existing-reply { background:#f0f9f0; border:1px solid #c8e6c8; border-radius:6px; padding:0.7rem 0.95rem; margin:0.6rem 0; }
+  .reply-header { display:flex; flex-wrap:wrap; gap:0.4rem 0.8rem; align-items:baseline; font-size:0.8rem; color:#2c4a2c; margin-bottom:0.3rem; }
+  .reply-time, .reply-by { color:#5a7a5a; font-weight:normal; }
+  .reply-text { white-space:pre-wrap; margin:0; color:#1a3a1a; font-size:0.88rem; }
+  .reply-form { margin-top:0.5rem; }
+  .reply-form textarea { width:100%; box-sizing:border-box; padding:0.55rem; border:1px solid #ccc; border-radius:4px; font-family:inherit; font-size:0.88rem; resize:vertical; }
+  .reply-actions { display:flex; gap:0.5rem; margin-top:0.4rem; justify-content:flex-end; }
+  .btn-submit-reply, .btn-edit, .btn-delete-fb { padding:0.4rem 0.85rem; border:none; border-radius:4px; cursor:pointer; font-size:0.84rem; }
+  .btn-submit-reply { background:#28a745; color:#fff; }
+  .btn-submit-reply:disabled { opacity:0.4; cursor:not-allowed; }
+  .btn-edit { background:#6688aa; color:#fff; }
+  .btn-delete-fb { background:#c66; color:#fff; }
+  .btn-delete-fb:disabled { opacity:0.5; cursor:not-allowed; }
 
   /* ── 按鈕 ──────────────────────────────────────────────────────────────── */
   .action-btn { padding:0.3rem 0.65rem; background:#28a745; color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.82rem; }
