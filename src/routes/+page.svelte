@@ -496,7 +496,7 @@
                         {/if}
                       </td>
                       <td class="mono uid-cell" title={u.id}>{u.id.slice(0, 12)}…</td>
-                      <td class="email-cell">{u.email || <span style="color:#ccc">—</span>}</td>
+                      <td class="email-cell">{#if u.email}{u.email}{:else}<span style="color:#ccc">—</span>{/if}</td>
                       <td class="mono device-id" title={u.deviceId || '未知'}>{u.deviceId ? u.deviceId.slice(0, 8) : '—'}</td>
                       <td class="browser-cell">{parseBrowser(u.userAgent)}</td>
                       <td class="num-cell">{u.loginCount || 1}</td>
