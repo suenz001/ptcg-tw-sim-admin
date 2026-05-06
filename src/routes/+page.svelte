@@ -552,7 +552,7 @@
                       {#each group.accounts as u}
                         <tr class="sub-row">
                           <td class="mono sub-uid" title={u.id}>↳ {u.id.slice(0, 12)}…</td>
-                          <td>{u.isAnonymous ? <span class="type-anon">匿名</span> : <span class="type-member">會員</span>}</td>
+                          <td>{#if u.isAnonymous}<span class="type-anon">匿名</span>{:else}<span class="type-member">會員</span>{/if}</td>
                           <td colspan="2">{u.email || '—'}</td>
                           <td class="num-cell">{u.loginCount || 1}</td>
                           <td class="date-cell">{formatDate(u.lastLoginAt || u.createdAt)}</td>
@@ -564,7 +564,7 @@
                   {#each deviceGroups.noDevice as u}
                     <tr>
                       <td class="mono" style="color:#ccc">—</td>
-                      <td>{u.isAnonymous ? <span class="type-anon">匿名</span> : <span class="type-member">會員</span>}</td>
+                      <td>{#if u.isAnonymous}<span class="type-anon">匿名</span>{:else}<span class="type-member">會員</span>{/if}</td>
                       <td>{u.email || '—'}</td>
                       <td class="browser-cell">{parseBrowser(u.userAgent)}</td>
                       <td class="num-cell">{u.loginCount || 1}</td>
