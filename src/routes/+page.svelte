@@ -301,11 +301,16 @@
   }
 
   onMount(() => {
+    // 手機偵測（JS 雙保險）
+    const checkMobile = () => { isMobile = window.innerWidth <= 768; };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+
     const unsub = onAuthStateChanged(auth, (user) => {
       currentUser = user; authLoading = false;
       if (user && user.email === ADMIN_EMAIL) loadData();
     });
-    return unsub;
+    return () => { unsub(); window.removeEventListener('resize', checkMobile); };
   });
 
   function formatDate(ts: any) {
@@ -322,6 +327,9 @@
     if (/Safari\//.test(ua)) return '🧭 Safari';
     return '❓ 其他';
   }
+
+  // ── 手機偵測 ──────────────────────────────────────────────────────────────
+  let isMobile = $state(false);
 
   const SPARK_DAILY_READS = 50000;
   let readPercent = $derived(Math.min(100, (adminReadCount / SPARK_DAILY_READS) * 100));
@@ -372,8 +380,8 @@
     </div>
   </header>
 
-  <div class="dashboard">
-    <aside class="sidebar">
+  <div class="dashboard" class:mobile={isMobile}>
+    <aside class="sidebar" class:mobile={isMobile}>
       <button class:active={activeTab === 'overview'}  onclick={() => activeTab = 'overview'}>📊 總覽</button>
       <button class:active={activeTab === 'users'}     onclick={() => activeTab = 'users'}>👥 玩家列表</button>
       <button class:active={activeTab === 'feedback'}  onclick={() => activeTab = 'feedback'}>💬 意見回饋</button>
@@ -1093,4 +1101,106 @@
   .firebase-link-btn:hover { background:#e9ecef; }
   .firebase-link-primary { background:#e25822; color:white; border-color:#e25822; }
   .firebase-link-primary:hover { background:#c94d1e; }
+
+    /* ══════════════════════════════════════════════════════════════════════════
+     RWD — JS class-based（主）+ @media（備援）
+     手機時 JS 會在 .dashboard / .sidebar 加上 .mobile class
+  ══════════════════════════════════════════════════════════════════════════ */
+
+  /* ── .mobile class（JS 直接寫入，優先級最高）───────────────────────────── */
+  :global(.dashboard.mobile) {
+    flex-direction: column !important;
+    height: auto !important;
+    min-height: 100vh;
+    max-width: 100%;
+  }
+  :global(.sidebar.mobile) {
+    width: 100% !important;
+    height: auto !important;
+    flex-direction: row !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    border-right: none !important;
+    border-bottom: 2px solid #e0e0e0 !important;
+    padding: 0.5rem 0.5rem 0 !important;
+    gap: 0.25rem !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  :global(.sidebar.mobile button) {
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+    text-align: center !important;
+    padding: 0.5rem 1rem !important;
+    border-radius: 8px 8px 0 0 !important;
+    font-size: 0.85rem !important;
+  }
+  :global(.sidebar.mobile .refresh-btn) {
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+    margin-top: 0 !important;
+    padding: 0.5rem 0.9rem !important;
+  }
+  :global(.sidebar.mobile .last-refresh) { display: none !important; }
+
+  /* ── @media 備援（CSS-only 瀏覽器）────────────────────────────────────── */
+  @media (max-width: 768px) {
+    .dashboard {
+      flex-direction: column !important;
+      height: auto !important;
+      min-height: 100vh;
+      max-width: 100%;
+    }
+    .sidebar {
+      width: 100% !important;
+      height: auto !important;
+      flex-direction: row !important;
+      overflow-x: auto !important;
+      overflow-y: hidden !important;
+      border-right: none !important;
+      border-bottom: 2px solid #e0e0e0 !important;
+      padding: 0.5rem 0.5rem 0 !important;
+      gap: 0.25rem !important;
+      -webkit-overflow-scrolling: touch;
+    }
+    .sidebar button {
+      white-space: nowrap !important;
+      flex-shrink: 0 !important;
+      text-align: center !important;
+      padding: 0.5rem 1rem !important;
+      border-radius: 8px 8px 0 0 !important;
+      font-size: 0.85rem !important;
+    }
+    .sidebar .refresh-btn {
+      white-space: nowrap !important;
+      flex-shrink: 0 !important;
+      margin-top: 0 !important;
+      padding: 0.5rem 0.9rem !important;
+    }
+    .last-refresh { display: none !important; }
+    .content { padding: 1rem !important; overflow-y: auto; }
+    .admin-header { padding: 0.7rem 1rem !important; }
+    .header-content h1 { font-size: 1rem !important; }
+    .user-info { font-size: 0.8rem !important; gap: 0.5rem !important; }
+    .ov-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 0.6rem !important; }
+    .ov-card { padding: 0.9rem 0.75rem !important; }
+    .ov-num { font-size: 1.8rem !important; }
+    .filter-bar { flex-direction: column !important; align-items: stretch !important; gap: 0.5rem !important; }
+    .filter-bar > * { width: 100% !important; }
+    .filter-select { width: 100% !important; }
+    .table-container { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
+    .table-container table { min-width: 520px !important; }
+    .modal-content { width: 95vw !important; max-width: 95vw !important; padding: 1.2rem !important; }
+    .battle-decks-grid { grid-template-columns: 1fr !important; gap: 0.75rem !important; }
+    .firebase-stats-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  }
+
+  @media (max-width: 480px) {
+    .ov-grid { grid-template-columns: 1fr !important; }
+    .firebase-stats-grid { grid-template-columns: 1fr !important; }
+    .header-content h1 .version { display: none !important; }
+    .header-content h1 { font-size: 0.95rem !important; }
+    .content { padding: 0.75rem !important; }
+    .sidebar button { font-size: 0.8rem !important; padding: 0.45rem 0.75rem !important; }
+    .sidebar .refresh-btn { font-size: 0.8rem !important; padding: 0.45rem 0.75rem !important; }
+  }
 </style>
