@@ -281,14 +281,15 @@
         totalUserCount = snap.data().count;
       } catch { /* fallback */ }
 
-      const usersSnap = await getDocs(query(collection(db, 'users'), orderBy('lastLoginAt', 'desc'), limit(100)));
+      // v1.17：limit 100→500，但 UI 文字拿掉「最新 N 筆」（看不出 truncate）
+      const usersSnap = await getDocs(query(collection(db, 'users'), orderBy('lastLoginAt', 'desc'), limit(500)));
       users = usersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       if (totalUserCount === 0) totalUserCount = users.length;
 
-      const roomsSnap = await getDocs(query(collection(db, 'rooms'), orderBy('updatedAt', 'desc'), limit(100)));
+      const roomsSnap = await getDocs(query(collection(db, 'rooms'), orderBy('updatedAt', 'desc'), limit(500)));
       rooms = roomsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-      const feedSnap = await getDocs(query(collection(db, 'feedbacks'), orderBy('createdAt', 'desc'), limit(50)));
+      const feedSnap = await getDocs(query(collection(db, 'feedbacks'), orderBy('createdAt', 'desc'), limit(200)));
       feedbacks = feedSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
       adminReadCount += users.length + rooms.length + feedbacks.length;
@@ -301,16 +302,11 @@
   }
 
   onMount(() => {
-    // 手機偵測（JS 雙保險）
-    const checkMobile = () => { isMobile = window.innerWidth <= 768; };
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-
     const unsub = onAuthStateChanged(auth, (user) => {
       currentUser = user; authLoading = false;
       if (user && user.email === ADMIN_EMAIL) loadData();
     });
-    return () => { unsub(); window.removeEventListener('resize', checkMobile); };
+    return unsub;
   });
 
   function formatDate(ts: any) {
@@ -327,9 +323,6 @@
     if (/Safari\//.test(ua)) return '🧭 Safari';
     return '❓ 其他';
   }
-
-  // ── 手機偵測 ──────────────────────────────────────────────────────────────
-  let isMobile = $state(false);
 
   const SPARK_DAILY_READS = 50000;
   let readPercent = $derived(Math.min(100, (adminReadCount / SPARK_DAILY_READS) * 100));
@@ -380,8 +373,8 @@
     </div>
   </header>
 
-  <div class="dashboard" class:mobile={isMobile}>
-    <aside class="sidebar" class:mobile={isMobile}>
+  <div class="dashboard">
+    <aside class="sidebar">
       <button class:active={activeTab === 'overview'}  onclick={() => activeTab = 'overview'}>📊 總覽</button>
       <button class:active={activeTab === 'users'}     onclick={() => activeTab = 'users'}>👥 玩家列表</button>
       <button class:active={activeTab === 'feedback'}  onclick={() => activeTab = 'feedback'}>💬 意見回饋</button>
@@ -420,22 +413,22 @@
             <div class="ov-card">
               <div class="ov-num">{overviewStats.memberCount}</div>
               <div class="ov-label">🧑 會員（有 Email）</div>
-              <div class="ov-sub">最新 {users.length} 筆中</div>
+              <div class="ov-sub">已載入 {users.length}</div>
             </div>
             <div class="ov-card">
               <div class="ov-num">{overviewStats.anonCount}</div>
               <div class="ov-label">👤 匿名訪客</div>
-              <div class="ov-sub">最新 {users.length} 筆中</div>
+              <div class="ov-sub">已載入 {users.length}</div>
             </div>
             <div class="ov-card ov-highlight">
               <div class="ov-num">+{overviewStats.activeUsers24h}</div>
               <div class="ov-label">過去 24h 活躍</div>
-              <div class="ov-sub">最新 {users.length} 筆估算</div>
+              <div class="ov-sub">已載入 {users.length} 估算</div>
             </div>
           </div>
 
           <!-- 對戰統計 -->
-          <div class="ov-section-label">🎮 對戰統計（最新 100 筆）</div>
+          <div class="ov-section-label">🎮 對戰統計</div>
           <div class="ov-grid">
             <div class="ov-card">
               <div class="ov-num">{rooms.length}</div>
@@ -456,12 +449,12 @@
             <div class="ov-card ov-highlight">
               <div class="ov-num">+{overviewStats.newBattles24h}</div>
               <div class="ov-label">過去 24h 新增對戰</div>
-              <div class="ov-sub">最新 100 筆估算</div>
+              <div class="ov-sub">已載入 {rooms.length} 估算</div>
             </div>
           </div>
 
           <!-- 回饋統計 -->
-          <div class="ov-section-label">💬 意見回饋（最新 50 筆）</div>
+          <div class="ov-section-label">💬 意見回饋</div>
           <div class="ov-grid">
             <div class="ov-card">
               <div class="ov-num">{feedbacks.length}</div>
@@ -494,7 +487,7 @@
       <!-- ════════════ 玩家列表 ════════════ -->
       {:else if activeTab === 'users'}
         <section>
-          <h2>玩家列表（最新 {users.length} 筆 / 共 {totalUserCount} 人）</h2>
+          <h2>玩家列表（已載入 {users.length} / 共 {totalUserCount} 人）</h2>
           <div class="filter-bar">
             <input type="text" class="filter-input" placeholder="搜尋 UID / Email / 裝置ID..."
                    bind:value={searchQuery} />
@@ -632,7 +625,7 @@
       <!-- ════════════ 意見回饋 ════════════ -->
       {:else if activeTab === 'feedback'}
         <section>
-          <h2>意見回饋（最新 50 筆）— 可加回覆給玩家</h2>
+          <h2>意見回饋 — 可加回覆給玩家</h2>
           <p class="feedback-intro">
             🛈 玩家在主站打開意見回饋視窗時，會看到自己提交過的歷史回饋與你在這裡寫的回覆。
             送出/編輯/刪除回覆會即時同步到玩家端。
@@ -699,7 +692,7 @@
       <!-- ════════════ 對戰紀錄 ════════════ -->
       {:else if activeTab === 'battles'}
         <section>
-          <h2>對戰紀錄（最新 100 筆）</h2>
+          <h2>對戰紀錄</h2>
           <div class="filter-bar">
             <button class="battle-filter-btn" class:active={battleFilter === 'all'}     onclick={() => battleFilter = 'all'}>全部 ({rooms.length})</button>
             <button class="battle-filter-btn playing" class:active={battleFilter === 'playing'} onclick={() => battleFilter = 'playing'}>⚔️ 進行中 ({rooms.filter(r=>r.status==='playing').length})</button>
@@ -1101,106 +1094,4 @@
   .firebase-link-btn:hover { background:#e9ecef; }
   .firebase-link-primary { background:#e25822; color:white; border-color:#e25822; }
   .firebase-link-primary:hover { background:#c94d1e; }
-
-    /* ══════════════════════════════════════════════════════════════════════════
-     RWD — JS class-based（主）+ @media（備援）
-     手機時 JS 會在 .dashboard / .sidebar 加上 .mobile class
-  ══════════════════════════════════════════════════════════════════════════ */
-
-  /* ── .mobile class（JS 直接寫入，優先級最高）───────────────────────────── */
-  :global(.dashboard.mobile) {
-    flex-direction: column !important;
-    height: auto !important;
-    min-height: 100vh;
-    max-width: 100%;
-  }
-  :global(.sidebar.mobile) {
-    width: 100% !important;
-    height: auto !important;
-    flex-direction: row !important;
-    overflow-x: auto !important;
-    overflow-y: hidden !important;
-    border-right: none !important;
-    border-bottom: 2px solid #e0e0e0 !important;
-    padding: 0.5rem 0.5rem 0 !important;
-    gap: 0.25rem !important;
-    -webkit-overflow-scrolling: touch;
-  }
-  :global(.sidebar.mobile button) {
-    white-space: nowrap !important;
-    flex-shrink: 0 !important;
-    text-align: center !important;
-    padding: 0.5rem 1rem !important;
-    border-radius: 8px 8px 0 0 !important;
-    font-size: 0.85rem !important;
-  }
-  :global(.sidebar.mobile .refresh-btn) {
-    white-space: nowrap !important;
-    flex-shrink: 0 !important;
-    margin-top: 0 !important;
-    padding: 0.5rem 0.9rem !important;
-  }
-  :global(.sidebar.mobile .last-refresh) { display: none !important; }
-
-  /* ── @media 備援（CSS-only 瀏覽器）────────────────────────────────────── */
-  @media (max-width: 768px) {
-    .dashboard {
-      flex-direction: column !important;
-      height: auto !important;
-      min-height: 100vh;
-      max-width: 100%;
-    }
-    .sidebar {
-      width: 100% !important;
-      height: auto !important;
-      flex-direction: row !important;
-      overflow-x: auto !important;
-      overflow-y: hidden !important;
-      border-right: none !important;
-      border-bottom: 2px solid #e0e0e0 !important;
-      padding: 0.5rem 0.5rem 0 !important;
-      gap: 0.25rem !important;
-      -webkit-overflow-scrolling: touch;
-    }
-    .sidebar button {
-      white-space: nowrap !important;
-      flex-shrink: 0 !important;
-      text-align: center !important;
-      padding: 0.5rem 1rem !important;
-      border-radius: 8px 8px 0 0 !important;
-      font-size: 0.85rem !important;
-    }
-    .sidebar .refresh-btn {
-      white-space: nowrap !important;
-      flex-shrink: 0 !important;
-      margin-top: 0 !important;
-      padding: 0.5rem 0.9rem !important;
-    }
-    .last-refresh { display: none !important; }
-    .content { padding: 1rem !important; overflow-y: auto; }
-    .admin-header { padding: 0.7rem 1rem !important; }
-    .header-content h1 { font-size: 1rem !important; }
-    .user-info { font-size: 0.8rem !important; gap: 0.5rem !important; }
-    .ov-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 0.6rem !important; }
-    .ov-card { padding: 0.9rem 0.75rem !important; }
-    .ov-num { font-size: 1.8rem !important; }
-    .filter-bar { flex-direction: column !important; align-items: stretch !important; gap: 0.5rem !important; }
-    .filter-bar > * { width: 100% !important; }
-    .filter-select { width: 100% !important; }
-    .table-container { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
-    .table-container table { min-width: 520px !important; }
-    .modal-content { width: 95vw !important; max-width: 95vw !important; padding: 1.2rem !important; }
-    .battle-decks-grid { grid-template-columns: 1fr !important; gap: 0.75rem !important; }
-    .firebase-stats-grid { grid-template-columns: repeat(2, 1fr) !important; }
-  }
-
-  @media (max-width: 480px) {
-    .ov-grid { grid-template-columns: 1fr !important; }
-    .firebase-stats-grid { grid-template-columns: 1fr !important; }
-    .header-content h1 .version { display: none !important; }
-    .header-content h1 { font-size: 0.95rem !important; }
-    .content { padding: 0.75rem !important; }
-    .sidebar button { font-size: 0.8rem !important; padding: 0.45rem 0.75rem !important; }
-    .sidebar .refresh-btn { font-size: 0.8rem !important; padding: 0.45rem 0.75rem !important; }
-  }
 </style>
