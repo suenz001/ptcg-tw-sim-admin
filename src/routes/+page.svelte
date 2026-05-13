@@ -61,6 +61,9 @@
   let loadingDecks   = $state(false);
   let expandedDeckId = $state<string | null>(null);
   let viewingRoom    = $state<any>(null);
+  let roomModalTab   = $state<'decks' | 'chat'>('decks');
+  let roomMessages   = $state<any[]>([]);
+  let loadingMessages = $state(false);
 
   // Firebase 用量估算
   let adminReadCount = $state(0);
@@ -191,7 +194,27 @@
     finally { loadingDecks = false; }
   }
   function closeDecks()       { viewingUser = null; }
-  function openRoomDecks(r: any) { viewingRoom = r; loadCardNames(); }
+  function openRoomDecks(r: any) {
+    viewingRoom = r;
+    roomModalTab = 'decks';
+    roomMessages = [];
+    loadCardNames();
+    loadRoomMessages(r.id);
+  }
+  async function loadRoomMessages(roomId: string) {
+    loadingMessages = true;
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'rooms', roomId, 'messages'), orderBy('createdAt', 'asc'), limit(200))
+      );
+      roomMessages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (err) {
+      console.error('載入對話失敗：', err);
+      roomMessages = [];
+    } finally {
+      loadingMessages = false;
+    }
+  }
   function closeRoomDecks()   { viewingRoom = null; }
 
   // ── 裝置群組 ─────────────────────────────────────────────────────────────────
@@ -797,42 +820,74 @@
     </div>
   </div>
 
-  <!-- ── 對戰牌組 Modal ── -->
+  <!-- ── 對戰 Modal（牌組 / 對話） ── -->
   {#if viewingRoom}
     <div class="modal-overlay" onclick={closeRoomDecks}>
       <div class="modal-content modal-wide" onclick={(e)=>e.stopPropagation()}>
         <div class="modal-header">
-          <h2>🎮 {viewingRoom.roomName || viewingRoom.id} — 使用牌組</h2>
+          <h2>🎮 {viewingRoom.roomName || viewingRoom.id}</h2>
+          <div class="modal-tabs">
+            <button class="modal-tab" class:active={roomModalTab==='decks'} onclick={() => roomModalTab='decks'}>🃏 使用牌組</button>
+            <button class="modal-tab" class:active={roomModalTab==='chat'}  onclick={() => roomModalTab='chat'}>💬 對話紀錄 {#if roomMessages.length > 0}<span class="msg-count">{roomMessages.length}</span>{/if}</button>
+          </div>
           <button class="close-btn" onclick={closeRoomDecks}>✕</button>
         </div>
         <div class="modal-body">
-          {#if !cardNameLoaded}<p>載入卡名中...</p>
-          {:else}
-            <div class="battle-decks-grid">
-              {#each [0, 1] as playerIdx}
-                {@const seat = viewingRoom.seats?.[playerIdx]}
-                {@const isWinner = viewingRoom.gameState?.winner === playerIdx}
-                <div class="battle-deck-col">
-                  <div class="battle-deck-header" class:is-winner={isWinner}>
-                    <span class="player-label">P{playerIdx+1}</span>
-                    <span class="player-name">{seat?.name || '（空）'}</span>
-                    {#if isWinner}<span class="winner-badge">🏆 勝者</span>{/if}
-                    <span class="deck-total">{seat?.deckEntries?.reduce((s:number,e:any)=>s+e.count,0) ?? 0} 張</span>
+
+          {#if roomModalTab === 'decks'}
+            {#if !cardNameLoaded}<p>載入卡名中...</p>
+            {:else}
+              <div class="battle-decks-grid">
+                {#each [0, 1] as playerIdx}
+                  {@const seat = viewingRoom.seats?.[playerIdx]}
+                  {@const isWinner = viewingRoom.gameState?.winner === playerIdx}
+                  <div class="battle-deck-col">
+                    <div class="battle-deck-header" class:is-winner={isWinner}>
+                      <span class="player-label">P{playerIdx+1}</span>
+                      <span class="player-name">{seat?.name || '（空）'}</span>
+                      {#if isWinner}<span class="winner-badge">🏆 勝者</span>{/if}
+                      <span class="deck-total">{seat?.deckEntries?.reduce((s:number,e:any)=>s+e.count,0) ?? 0} 張</span>
+                    </div>
+                    {#if seat?.deckEntries?.length > 0}
+                      <table class="deck-table">
+                        <thead><tr><th>卡牌名稱</th><th>數量</th></tr></thead>
+                        <tbody>
+                          {#each seat.deckEntries as e}
+                            <tr><td>{getCardLabel(e.cardId)}</td><td style="text-align:center">x{e.count}</td></tr>
+                          {/each}
+                        </tbody>
+                      </table>
+                    {:else}<p class="no-deck">無牌組資料</p>{/if}
                   </div>
-                  {#if seat?.deckEntries?.length > 0}
-                    <table class="deck-table">
-                      <thead><tr><th>卡牌名稱</th><th>數量</th></tr></thead>
-                      <tbody>
-                        {#each seat.deckEntries as e}
-                          <tr><td>{getCardLabel(e.cardId)}</td><td style="text-align:center">x{e.count}</td></tr>
-                        {/each}
-                      </tbody>
-                    </table>
-                  {:else}<p class="no-deck">無牌組資料</p>{/if}
-                </div>
-              {/each}
-            </div>
+                {/each}
+              </div>
+            {/if}
+
+          {:else}
+            {#if loadingMessages}
+              <p class="no-deck">載入對話中...</p>
+            {:else if roomMessages.length === 0}
+              <p class="no-deck">此場對戰沒有對話紀錄。</p>
+            {:else}
+              {@const p1name = viewingRoom.seats?.[0]?.name}
+              {@const p2name = viewingRoom.seats?.[1]?.name}
+              <div class="chat-log">
+                {#each roomMessages as msg}
+                  {@const isP1 = msg.name === p1name}
+                  {@const isP2 = msg.name === p2name}
+                  <div class="chat-row" class:chat-p1={isP1} class:chat-p2={isP2}>
+                    <span class="chat-name">
+                      {#if isP1}🔵{:else if isP2}🔴{:else}👁️{/if}
+                      {msg.name}
+                    </span>
+                    <span class="chat-bubble">{msg.text}</span>
+                    <span class="chat-time">{msg.createdAt?.seconds ? new Date(msg.createdAt.seconds*1000).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : ''}</span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
           {/if}
+
         </div>
       </div>
     </div>
@@ -1202,5 +1257,72 @@
     .content { padding: 0.75rem !important; }
     .sidebar button { font-size: 0.8rem !important; padding: 0.45rem 0.75rem !important; }
     .sidebar .refresh-btn { font-size: 0.8rem !important; padding: 0.45rem 0.75rem !important; }
+  }
+
+  /* Modal tab 切換 */
+  .modal-tabs {
+    display: flex;
+    gap: 0.5rem;
+    flex: 1;
+    margin: 0 1rem;
+  }
+  .modal-tab {
+    padding: 0.35rem 1rem;
+    border: 1px solid #ccc;
+    border-radius: 20px;
+    background: white;
+    font-size: 0.9rem;
+    cursor: pointer;
+    color: #555;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .modal-tab:hover { background: #f0f0f0; }
+  .modal-tab.active { background: #0066cc; color: white; border-color: #0066cc; }
+  .msg-count {
+    background: rgba(255,255,255,0.3);
+    border-radius: 10px;
+    padding: 0 0.4rem;
+    font-size: 0.8rem;
+  }
+  .modal-tab.active .msg-count { background: rgba(255,255,255,0.3); }
+  .modal-tab:not(.active) .msg-count { background: #0066cc; color: white; }
+
+  /* 對話紀錄 */
+  .chat-log {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.5rem 0;
+  }
+  .chat-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+    background: #f8f9fa;
+  }
+  .chat-row.chat-p1 { background: #e8f0fe; }
+  .chat-row.chat-p2 { background: #fde8e8; }
+  .chat-name {
+    font-weight: bold;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    min-width: 80px;
+    color: #444;
+  }
+  .chat-bubble {
+    flex: 1;
+    font-size: 0.95rem;
+    color: #222;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+  .chat-time {
+    font-size: 0.78rem;
+    color: #aaa;
+    white-space: nowrap;
   }
 </style>
