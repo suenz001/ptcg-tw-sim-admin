@@ -745,9 +745,9 @@
                   {@const winnerName = gs?.winner === 0 ? p1?.name : gs?.winner === 1 ? p2?.name : null}
                   <tr>
                     <td class="mono room-code">{room.id}</td>
-                    <td>{room.roomName || '-'}</td>
-                    <td class:winner-cell={gs?.winner === 0}>{p1?.name || '（空）'}</td>
-                    <td class:winner-cell={gs?.winner === 1}>{p2?.name || '（空）'}</td>
+                    <td class="truncate-cell" title={room.roomName || ''}>{room.roomName || '-'}</td>
+                    <td class="truncate-cell" class:winner-cell={gs?.winner === 0} title={p1?.name || ''}>{p1?.name || '（空）'}</td>
+                    <td class="truncate-cell" class:winner-cell={gs?.winner === 1} title={p2?.name || ''}>{p2?.name || '（空）'}</td>
                     <td><span class="status-badge status-{room.status}">
                       {room.status === 'playing' ? '⚔️ 進行中' : room.status === 'lobby' ? '🏠 等待中' : '✅ 已結束'}
                     </span></td>
@@ -1103,6 +1103,12 @@
   .room-code { font-size:0.9rem; font-weight:bold; letter-spacing:0.08em; color:#333; }
   .winner-cell { font-weight:bold; color:#0066cc; }
   .winner-col { color:#28a745; font-weight:600; }
+  .truncate-cell {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   /* ── Modal ─────────────────────────────────────────────────────────────── */
   .modal-overlay { position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.5); display:flex; justify-content:center; align-items:center; z-index:1000; }
