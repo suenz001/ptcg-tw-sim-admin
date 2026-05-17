@@ -60,10 +60,11 @@
   let userDecks      = $state<any[]>([]);
   let loadingDecks   = $state(false);
   let expandedDeckId = $state<string | null>(null);
-  let viewingRoom    = $state<any>(null);
-  let roomModalTab   = $state<'decks' | 'chat'>('decks');
-  let roomMessages   = $state<any[]>([]);
-  let loadingMessages = $state(false);
+  let viewingRoom      = $state<any>(null);       // 牌組 modal
+  let chatRoom         = $state<any>(null);       // 對話 modal
+  let chatMessages     = $state<any[]>([]);
+  let loadingChat      = $state(false);
+  let roomMsgCounts    = $state<Record<string, number>>({});  // roomId -> 訊息數
 
   // Firebase 用量估算
   let adminReadCount = $state(0);
@@ -196,26 +197,39 @@
   function closeDecks()       { viewingUser = null; }
   function openRoomDecks(r: any) {
     viewingRoom = r;
-    roomModalTab = 'decks';
-    roomMessages = [];
     loadCardNames();
-    loadRoomMessages(r.id);
   }
-  async function loadRoomMessages(roomId: string) {
-    loadingMessages = true;
+  function closeRoomDecks() { viewingRoom = null; }
+
+  // 對話 modal
+  async function openRoomChat(r: any) {
+    chatRoom = r;
+    chatMessages = [];
+    loadingChat = true;
     try {
       const snap = await getDocs(
-        query(collection(db, 'rooms', roomId, 'messages'), orderBy('createdAt', 'asc'), limit(200))
+        query(collection(db, 'rooms', r.id, 'messages'), orderBy('createdAt', 'asc'), limit(200))
       );
-      roomMessages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      chatMessages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch (err) {
       console.error('載入對話失敗：', err);
-      roomMessages = [];
     } finally {
-      loadingMessages = false;
+      loadingChat = false;
     }
   }
-  function closeRoomDecks()   { viewingRoom = null; }
+  function closeRoomChat() { chatRoom = null; }
+
+  // 載入所有房間的訊息數量（在 loadData 後呼叫）
+  async function loadAllMsgCounts(roomList: any[]) {
+    const counts: Record<string, number> = {};
+    await Promise.all(roomList.map(async (r) => {
+      try {
+        const res = await getCountFromServer(collection(db, 'rooms', r.id, 'messages'));
+        counts[r.id] = res.data().count;
+      } catch { counts[r.id] = 0; }
+    }));
+    roomMsgCounts = counts;
+  }
 
   // ── 裝置群組 ─────────────────────────────────────────────────────────────────
   function toggleDeviceGroup(deviceId: string) {
@@ -310,6 +324,7 @@
 
       const roomsSnap = await getDocs(query(collection(db, 'rooms'), orderBy('updatedAt', 'desc'), limit(500)));
       rooms = roomsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      loadAllMsgCounts(rooms); // 非同步載入各房間訊息數
 
       const feedSnap = await getDocs(query(collection(db, 'feedbacks'), orderBy('createdAt', 'desc'), limit(200)));
       feedbacks = feedSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -754,11 +769,17 @@
                     <td class="winner-col truncate-cell" title={winnerName ?? ''}>{winnerName ? `🏆 ${winnerName}` : '-'}</td>
                     <td class="num-cell">{gs?.turn ?? '-'}</td>
                     <td class="date-cell">{formatDate(room.updatedAt)}</td>
-                    <td>
+                    <td class="op-col">
                       {#if room.seats?.[0]?.deckEntries || room.seats?.[1]?.deckEntries}
-                        <button class="action-btn" onclick={() => openRoomDecks(room)}>牌組</button>
+                        <button class="action-btn" onclick={() => openRoomDecks(room)}>🃏 牌組</button>
+                      {/if}
+                      {@const cnt = roomMsgCounts[room.id]}
+                      {#if cnt === undefined}
+                        <button class="action-btn chat-btn chat-loading" disabled>💬 …</button>
+                      {:else if cnt > 0}
+                        <button class="action-btn chat-btn" onclick={() => openRoomChat(room)}>💬 {cnt}則</button>
                       {:else}
-                        <span style="color:#ccc">—</span>
+                        <button class="action-btn chat-btn chat-empty" disabled>💬 0</button>
                       {/if}
                     </td>
                   </tr>
@@ -825,69 +846,77 @@
     <div class="modal-overlay" onclick={closeRoomDecks}>
       <div class="modal-content modal-wide" onclick={(e)=>e.stopPropagation()}>
         <div class="modal-header">
-          <h2>🎮 {viewingRoom.roomName || viewingRoom.id}</h2>
-          <div class="modal-tabs">
-            <button class="modal-tab" class:active={roomModalTab==='decks'} onclick={() => roomModalTab='decks'}>🃏 使用牌組</button>
-            <button class="modal-tab" class:active={roomModalTab==='chat'}  onclick={() => roomModalTab='chat'}>💬 對話紀錄 {#if roomMessages.length > 0}<span class="msg-count">{roomMessages.length}</span>{/if}</button>
-          </div>
+          <h2>🃏 {viewingRoom.roomName || viewingRoom.id} — 使用牌組</h2>
           <button class="close-btn" onclick={closeRoomDecks}>✕</button>
         </div>
         <div class="modal-body">
-
-          {#if roomModalTab === 'decks'}
-            {#if !cardNameLoaded}<p>載入卡名中...</p>
-            {:else}
-              <div class="battle-decks-grid">
-                {#each [0, 1] as playerIdx}
-                  {@const seat = viewingRoom.seats?.[playerIdx]}
-                  {@const isWinner = viewingRoom.gameState?.winner === playerIdx}
-                  <div class="battle-deck-col">
-                    <div class="battle-deck-header" class:is-winner={isWinner}>
-                      <span class="player-label">P{playerIdx+1}</span>
-                      <span class="player-name">{seat?.name || '（空）'}</span>
-                      {#if isWinner}<span class="winner-badge">🏆 勝者</span>{/if}
-                      <span class="deck-total">{seat?.deckEntries?.reduce((s:number,e:any)=>s+e.count,0) ?? 0} 張</span>
-                    </div>
-                    {#if seat?.deckEntries?.length > 0}
-                      <table class="deck-table">
-                        <thead><tr><th>卡牌名稱</th><th>數量</th></tr></thead>
-                        <tbody>
-                          {#each seat.deckEntries as e}
-                            <tr><td>{getCardLabel(e.cardId)}</td><td style="text-align:center">x{e.count}</td></tr>
-                          {/each}
-                        </tbody>
-                      </table>
-                    {:else}<p class="no-deck">無牌組資料</p>{/if}
-                  </div>
-                {/each}
-              </div>
-            {/if}
-
+          {#if !cardNameLoaded}<p>載入卡名中...</p>
           {:else}
-            {#if loadingMessages}
-              <p class="no-deck">載入對話中...</p>
-            {:else if roomMessages.length === 0}
-              <p class="no-deck">此場對戰沒有對話紀錄。</p>
-            {:else}
-              {@const p1name = viewingRoom.seats?.[0]?.name}
-              {@const p2name = viewingRoom.seats?.[1]?.name}
-              <div class="chat-log">
-                {#each roomMessages as msg}
-                  {@const isP1 = msg.name === p1name}
-                  {@const isP2 = msg.name === p2name}
-                  <div class="chat-row" class:chat-p1={isP1} class:chat-p2={isP2}>
-                    <span class="chat-name">
-                      {#if isP1}🔵{:else if isP2}🔴{:else}👁️{/if}
-                      {msg.name}
-                    </span>
-                    <span class="chat-bubble">{msg.text}</span>
-                    <span class="chat-time">{msg.createdAt?.seconds ? new Date(msg.createdAt.seconds*1000).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : ''}</span>
+            <div class="battle-decks-grid">
+              {#each [0, 1] as playerIdx}
+                {@const seat = viewingRoom.seats?.[playerIdx]}
+                {@const isWinner = viewingRoom.gameState?.winner === playerIdx}
+                <div class="battle-deck-col">
+                  <div class="battle-deck-header" class:is-winner={isWinner}>
+                    <span class="player-label">P{playerIdx+1}</span>
+                    <span class="player-name">{seat?.name || '（空）'}</span>
+                    {#if isWinner}<span class="winner-badge">🏆 勝者</span>{/if}
+                    <span class="deck-total">{seat?.deckEntries?.reduce((s:number,e:any)=>s+e.count,0) ?? 0} 張</span>
                   </div>
-                {/each}
-              </div>
-            {/if}
+                  {#if seat?.deckEntries?.length > 0}
+                    <table class="deck-table">
+                      <thead><tr><th>卡牌名稱</th><th>數量</th></tr></thead>
+                      <tbody>
+                        {#each seat.deckEntries as e}
+                          <tr><td>{getCardLabel(e.cardId)}</td><td style="text-align:center">x{e.count}</td></tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  {:else}<p class="no-deck">無牌組資料</p>{/if}
+                </div>
+              {/each}
+            </div>
           {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
 
+  <!-- ── 對話紀錄 Modal ── -->
+  {#if chatRoom}
+    <div class="modal-overlay" onclick={closeRoomChat}>
+      <div class="modal-content modal-chat" onclick={(e)=>e.stopPropagation()}>
+        <div class="modal-header">
+          <h2>💬 {chatRoom.roomName || chatRoom.id} — 對話紀錄</h2>
+          <div class="chat-players-hint">
+            <span class="chat-hint-p1">🔵 {chatRoom.seats?.[0]?.name || 'P1'}</span>
+            <span class="chat-hint-p2">🔴 {chatRoom.seats?.[1]?.name || 'P2'}</span>
+          </div>
+          <button class="close-btn" onclick={closeRoomChat}>✕</button>
+        </div>
+        <div class="modal-body">
+          {#if loadingChat}
+            <p class="no-deck">載入對話中...</p>
+          {:else if chatMessages.length === 0}
+            <p class="no-deck">此場對戰沒有對話紀錄。</p>
+          {:else}
+            {@const p1name = chatRoom.seats?.[0]?.name}
+            {@const p2name = chatRoom.seats?.[1]?.name}
+            <div class="chat-log">
+              {#each chatMessages as msg}
+                {@const isP1 = msg.name === p1name}
+                {@const isP2 = msg.name === p2name}
+                <div class="chat-row" class:chat-p1={isP1} class:chat-p2={isP2}>
+                  <span class="chat-name">
+                    {#if isP1}🔵{:else if isP2}🔴{:else}👁️{/if}
+                    {msg.name}
+                  </span>
+                  <span class="chat-bubble">{msg.text}</span>
+                  <span class="chat-time">{msg.createdAt?.seconds ? new Date(msg.createdAt.seconds*1000).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : ''}</span>
+                </div>
+              {/each}
+            </div>
+          {/if}
         </div>
       </div>
     </div>
@@ -1331,4 +1360,20 @@
     color: #aaa;
     white-space: nowrap;
   }
+
+  /* 操作欄按鈕並排 */
+  .op-col { display:flex; gap:0.4rem; align-items:center; flex-wrap:wrap; }
+  .chat-btn { background:#6f42c1 !important; }
+  .chat-btn:hover { background:#5a32a3 !important; }
+  .chat-btn:disabled { background:#ccc !important; cursor:default; }
+  .chat-loading { opacity:0.6; }
+  .chat-empty { background:#e9ecef !important; color:#aaa !important; }
+
+  /* 對話 Modal */
+  .modal-chat { max-width: 680px; }
+  .chat-players-hint {
+    display:flex; gap:1rem; margin-left:0.5rem; font-size:0.85rem; font-weight:600;
+  }
+  .chat-hint-p1 { color:#1a56db; }
+  .chat-hint-p2 { color:#e02424; }
 </style>
