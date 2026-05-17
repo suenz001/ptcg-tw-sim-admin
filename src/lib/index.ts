@@ -4,5 +4,5 @@
 
 // 系統版本號：小更新 +0.01，大更新 +0.1
 
-export const APP_VERSION = 'v 1.22';
+export const APP_VERSION = 'v 1.221';
 

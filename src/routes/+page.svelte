@@ -773,11 +773,10 @@
                       {#if room.seats?.[0]?.deckEntries || room.seats?.[1]?.deckEntries}
                         <button class="action-btn" onclick={() => openRoomDecks(room)}>🃏 牌組</button>
                       {/if}
-                      {@const cnt = roomMsgCounts[room.id]}
-                      {#if cnt === undefined}
+                      {#if roomMsgCounts[room.id] === undefined}
                         <button class="action-btn chat-btn chat-loading" disabled>💬 …</button>
-                      {:else if cnt > 0}
-                        <button class="action-btn chat-btn" onclick={() => openRoomChat(room)}>💬 {cnt}則</button>
+                      {:else if roomMsgCounts[room.id] > 0}
+                        <button class="action-btn chat-btn" onclick={() => openRoomChat(room)}>💬 {roomMsgCounts[room.id]}則</button>
                       {:else}
                         <button class="action-btn chat-btn chat-empty" disabled>💬 0</button>
                       {/if}
