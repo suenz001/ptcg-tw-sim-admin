@@ -751,7 +751,7 @@
                     <td><span class="status-badge status-{room.status}">
                       {room.status === 'playing' ? '⚔️ 進行中' : room.status === 'lobby' ? '🏠 等待中' : '✅ 已結束'}
                     </span></td>
-                    <td class="winner-col">{winnerName ? `🏆 ${winnerName}` : '-'}</td>
+                    <td class="winner-col truncate-cell" title={winnerName ?? ''}>{winnerName ? `🏆 ${winnerName}` : '-'}</td>
                     <td class="num-cell">{gs?.turn ?? '-'}</td>
                     <td class="date-cell">{formatDate(room.updatedAt)}</td>
                     <td>
